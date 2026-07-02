@@ -5,19 +5,26 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from hermes_flow.engine import advance_state, detect_idle_timeout, evaluate_gate
+from hermes_flow.errors import RuntimeStateError
 from hermes_flow.flow_loader import load_flow_from_yaml, validate_flow
+from hermes_flow.routing import validate_message
 from hermes_flow.schemas import (
     AgentBinding,
+    Decision,
+    DeliveryOutcome,
     FlowInitResult,
     FlowStatus,
     GateStatus,
     MessageEnvelope,
+    RunStatus,
     StepResult,
+    _new_id,
     _now,
     to_dict,
 )
 from hermes_flow.storage import RuntimeStore
-from hermes_flow.trace import SqliteTracer, set_tracer
+from hermes_flow.trace import SqliteTracer, set_tracer, get_tracer
 
 
 # ── JSON response helpers ───────────────────────────────────────────────────
@@ -30,6 +37,34 @@ def ok_result(data: dict[str, Any]) -> dict[str, Any]:
 def error_result(message: str, details: list[str] | None = None) -> dict[str, Any]:
     """Wrap an error result with an ok flag and message."""
     return {"ok": False, "error": message, "details": details or []}
+
+
+def _get_store(run_id: str) -> RuntimeStore:
+    """Resolve a run's store from the project root."""
+    # This is a simplified resolution — in practice the project_root is stored
+    # in a config or inferred from the run directory structure.
+    # For now, search common locations.
+    import os
+    # Check if HERMES_FLOW_PROJECT_ROOT is set
+    project_root = os.environ.get("HERMES_FLOW_PROJECT_ROOT", "")
+    if project_root:
+        run_dir = Path(project_root) / ".hermes-flow" / "runs" / run_id
+        if run_dir.exists():
+            store = RuntimeStore(run_dir)
+            store.init_schema()
+            return store
+
+    # Fall back to current directory search
+    import glob
+    for base in [Path.cwd(), Path.home()]:
+        pattern = str(base / ".hermes-flow" / "runs" / run_id)
+        matches = list(Path(base / ".hermes-flow" / "runs").glob(f"{run_id}*"))
+        if matches:
+            store = RuntimeStore(matches[0])
+            store.init_schema()
+            return store
+
+    raise RuntimeStateError(f"Run {run_id} not found — cannot resolve store")
 
 
 # ── Tool handlers ───────────────────────────────────────────────────────────
@@ -112,7 +147,7 @@ def flow_init(
         memory_modes=memory_modes,
         artifact_root=artifact_root,
         states_json=states_json,
-        override_run_id=run_id,  # use the directory name as run_id
+        override_run_id=run_id,
     )
 
     result = ok_result({
@@ -130,7 +165,32 @@ def flow_status(
     include_recent_messages: bool = True,
 ) -> dict[str, Any]:
     """Inspect current run state, gates, messages, and next actions."""
-    raise NotImplementedError("flow_status — implement in US5 (Phase 7)")
+    tracer = get_tracer()
+    with tracer.span("flow_status", inputs={"run_id": run_id, "include_recent_messages": include_recent_messages}) as span:
+        try:
+            store = _get_store(run_id)
+        except RuntimeStateError as e:
+            result = error_result(str(e))
+            span.outputs = result
+            return result
+
+        try:
+            status = store.load_status(run_id)
+        except Exception as e:
+            result = error_result(str(e))
+            span.outputs = result
+            return result
+
+        result = ok_result({
+            "run_id": status.run_id,
+            "status": status.status.value if hasattr(status.status, "value") else str(status.status),
+            "current_state_id": status.current_state_id,
+            "pending_gate": to_dict(status.pending_gate) if status.pending_gate else None,
+            "round_counters": status.round_counters,
+            "next_actions": status.next_actions,
+        })
+        span.outputs = result
+        return result
 
 
 def flow_step(
@@ -138,7 +198,88 @@ def flow_step(
     max_actions: int = 1,
 ) -> dict[str, Any]:
     """Execute the next eligible state action or gate evaluation."""
-    raise NotImplementedError("flow_step — implement in US4 (Phase 6)")
+    tracer = get_tracer()
+    with tracer.span("flow_step", inputs={"run_id": run_id, "max_actions": max_actions}) as span:
+        try:
+            store = _get_store(run_id)
+        except RuntimeStateError as e:
+            result = error_result(str(e))
+            span.outputs = result
+            return result
+
+        try:
+            status = store.load_status(run_id)
+        except Exception as e:
+            result = error_result(str(e))
+            span.outputs = result
+            return result
+
+        # Reject non-active runs
+        if status.status not in (RunStatus.ACTIVE,):
+            result = error_result(f"Run {run_id} status is '{status.status.value}', only 'active' runs can step")
+            span.outputs = result
+            return result
+
+        # Check idle timeout first
+        timeout_result = detect_idle_timeout(run_id, status.current_state_id, store)
+        if timeout_result and timeout_result.timeout_exceeded and timeout_result.next_state_id:
+            # Get current round for the transition record
+            round_counter = status.round_counters.get(status.current_state_id, 1)
+            advance_state(run_id, status.current_state_id, timeout_result.next_state_id,
+                         "idle_timeout", round_counter, store)
+            new_status = store.load_status(run_id)
+            result = ok_result({
+                "action_taken": "idle_timeout",
+                "from_state": status.current_state_id,
+                "to_state": timeout_result.next_state_id,
+                "run_id": run_id,
+                "current_state_id": new_status.current_state_id,
+            })
+            span.outputs = result
+            return result
+
+        # Evaluate gate
+        try:
+            gate_result = evaluate_gate(run_id, status.current_state_id, store)
+        except RuntimeStateError as e:
+            result = error_result(str(e))
+            span.outputs = result
+            return result
+
+        # If gate is satisfied or has a transition target, advance state
+        if gate_result.next_state_id:
+            # Check if the new state should be a completed state (terminal)
+            advance_state(run_id, status.current_state_id, gate_result.next_state_id,
+                         gate_result.reason, gate_result.round, store)
+            new_status = store.load_status(run_id)
+            result = ok_result({
+                "action_taken": "gate_transition",
+                "from_state": status.current_state_id,
+                "to_state": gate_result.next_state_id,
+                "gate_satisfied": gate_result.satisfied,
+                "gate_reason": gate_result.reason,
+                "run_id": run_id,
+                "current_state_id": new_status.current_state_id,
+                "status": new_status.status.value,
+            })
+            span.outputs = result
+            return result
+
+        # No transition — return pending status
+        status_dict = flow_status(run_id)
+        result = ok_result({
+            "action_taken": "none",
+            "gate_result": {
+                "satisfied": gate_result.satisfied,
+                "outstanding_roles": gate_result.outstanding_roles,
+                "round": gate_result.round,
+                "reason": gate_result.reason,
+            },
+            "run_id": run_id,
+            "current_state_id": status.current_state_id,
+        })
+        span.outputs = result
+        return result
 
 
 def flow_send(
@@ -153,7 +294,78 @@ def flow_send(
     requires_ack: bool = False,
 ) -> dict[str, Any]:
     """Submit a scoped runtime message with atomic recipient validation."""
-    raise NotImplementedError("flow_send — implement in US3 (Phase 5)")
+    tracer = get_tracer()
+    with tracer.span("flow_send", inputs={
+        "run_id": run_id, "state_id": state_id, "from_role": from_role,
+        "intended_recipients": intended_recipients, "kind": kind,
+    }) as span:
+        try:
+            store = _get_store(run_id)
+        except RuntimeStateError as e:
+            result = error_result(str(e))
+            span.outputs = result
+            return result
+
+        # Load state definition for routing policies
+        conn = store.connect()
+        state_row = conn.execute(
+            "SELECT state_json FROM states WHERE run_id = ? AND state_id = ?",
+            (run_id, state_id),
+        ).fetchone()
+        if state_row is None:
+            result = error_result(f"State {state_id} not found in run {run_id}")
+            span.outputs = result
+            return result
+
+        from json import loads as json_loads
+        state_dict = json_loads(state_row["state_json"])
+        # Build routing policies from state's actor list
+        routing_policies: dict[str, list[str]] = {from_role: state_dict.get("actors", [])}
+
+        # Validate via router
+        route_result = validate_message(
+            run_id, state_id, from_role, intended_recipients,
+            routing_policies, store,
+        )
+
+        # Create message envelope
+        message_id = _new_id()
+        now = _now()
+        envelope = MessageEnvelope(
+            message_id=message_id,
+            run_id=run_id,
+            state_id=state_id,
+            from_role=from_role,
+            intended_recipients=intended_recipients,
+            authorized_recipients=route_result.authorized_recipients,
+            recipient_availability={r: r not in route_result.unavailable_recipients for r in intended_recipients},
+            visibility=visibility,
+            kind=kind,
+            content=content,
+            artifacts=artifacts or [],
+            requires_ack=requires_ack,
+            delivery_outcome=DeliveryOutcome.DELIVERED if route_result.valid else DeliveryOutcome.REJECTED,
+            rejection_reason=route_result.reason or "",
+            created_at=now,
+        )
+
+        # Persist message record
+        store.record_message_attempt(envelope)
+
+        # If valid, deliver inbox entries
+        if route_result.valid and route_result.authorized_recipients:
+            store.add_inbox_entries(run_id, from_role, state_id, [message_id])
+
+        result = ok_result({
+            "message_id": message_id,
+            "delivery_outcome": envelope.delivery_outcome.value,
+            "authorized_recipients": route_result.authorized_recipients,
+            "invalid_recipients": route_result.invalid_recipients,
+            "unavailable_recipients": route_result.unavailable_recipients,
+            "rejection_reason": route_result.reason,
+        })
+        span.outputs = result
+        return result
 
 
 def flow_decide(
@@ -165,7 +377,44 @@ def flow_decide(
     artifacts: list[str] | None = None,
 ) -> dict[str, Any]:
     """Record an agent or human decision for the current gate."""
-    raise NotImplementedError("flow_decide — implement in US4 (Phase 6)")
+    tracer = get_tracer()
+    with tracer.span("flow_decide", inputs={
+        "run_id": run_id, "state_id": state_id, "role_id": role_id, "value": value,
+    }) as span:
+        try:
+            store = _get_store(run_id)
+        except RuntimeStateError as e:
+            result = error_result(str(e))
+            span.outputs = result
+            return result
+
+        now = _now()
+        decision = Decision(
+            decision_id=_new_id(),
+            run_id=run_id,
+            state_id=state_id,
+            role_id=role_id,
+            value=value,
+            reason=reason,
+            artifacts=artifacts or [],
+            created_at=now,
+        )
+
+        store.record_decision(decision)
+        store.append_audit_event(
+            run_id=run_id,
+            event_type="decision_recorded",
+            state_id=state_id,
+            actor=role_id,
+            payload={"decision_value": value, "reason": reason},
+        )
+
+        result = ok_result({
+            "decision_id": decision.decision_id,
+            "value": value,
+        })
+        span.outputs = result
+        return result
 
 
 def flow_pause(
@@ -173,7 +422,27 @@ def flow_pause(
     reason: str,
 ) -> dict[str, Any]:
     """Pause an active run."""
-    raise NotImplementedError("flow_pause — implement in US5 (Phase 7)")
+    tracer = get_tracer()
+    with tracer.span("flow_pause", inputs={"run_id": run_id, "reason": reason}) as span:
+        try:
+            store = _get_store(run_id)
+        except RuntimeStateError as e:
+            result = error_result(str(e))
+            span.outputs = result
+            return result
+
+        store.update_status(run_id, RunStatus.PAUSED)
+        store.append_audit_event(
+            run_id=run_id,
+            event_type="run_paused",
+            state_id="",
+            actor="system",
+            payload={"reason": reason},
+        )
+
+        result = ok_result({"run_id": run_id, "status": "paused"})
+        span.outputs = result
+        return result
 
 
 def flow_resume(
@@ -181,7 +450,32 @@ def flow_resume(
     continuation_state: str = "",
 ) -> dict[str, Any]:
     """Resume a paused or escalated run."""
-    raise NotImplementedError("flow_resume — implement in US5 (Phase 7)")
+    tracer = get_tracer()
+    with tracer.span("flow_resume", inputs={"run_id": run_id, "continuation_state": continuation_state}) as span:
+        try:
+            store = _get_store(run_id)
+        except RuntimeStateError as e:
+            result = error_result(str(e))
+            span.outputs = result
+            return result
+
+        # Optionally advance to a specific state
+        if continuation_state:
+            status = store.load_status(run_id)
+            store.record_transition(run_id, status.current_state_id, continuation_state, "resume", 0)
+
+        store.update_status(run_id, RunStatus.ACTIVE)
+        store.append_audit_event(
+            run_id=run_id,
+            event_type="run_resumed",
+            state_id=continuation_state or "",
+            actor="system",
+            payload={"continuation_state": continuation_state},
+        )
+
+        result = ok_result({"run_id": run_id, "status": "active"})
+        span.outputs = result
+        return result
 
 
 def flow_abort(
@@ -189,4 +483,24 @@ def flow_abort(
     reason: str,
 ) -> dict[str, Any]:
     """Abort a run with an audit reason."""
-    raise NotImplementedError("flow_abort — implement in US5 (Phase 7)")
+    tracer = get_tracer()
+    with tracer.span("flow_abort", inputs={"run_id": run_id, "reason": reason}) as span:
+        try:
+            store = _get_store(run_id)
+        except RuntimeStateError as e:
+            result = error_result(str(e))
+            span.outputs = result
+            return result
+
+        store.update_status(run_id, RunStatus.ABORTED)
+        store.append_audit_event(
+            run_id=run_id,
+            event_type="run_aborted",
+            state_id="",
+            actor="system",
+            payload={"reason": reason},
+        )
+
+        result = ok_result({"run_id": run_id, "status": "aborted"})
+        span.outputs = result
+        return result

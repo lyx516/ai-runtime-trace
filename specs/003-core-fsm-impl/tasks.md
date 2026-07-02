@@ -128,47 +128,13 @@
 
 ### Implementation for User Story 3
 
-- [ ] T029 [US3] Implement `flow_status(run_id, include_recent_messages=True)` in `hermes_flow/tools.py`:
-  - Open the run's store via `RuntimeStore(run_dir)` (resolve run_dir from project_root + run_id)
-  - Call `store.load_status(run_id)` which returns FlowStatus with run_id, status, current_state_id, pending_gate, round_counters, recent_messages, next_actions
-  - Serialize to dict with `to_dict()`
-  - Wrap in `tracer.span(event_type='flow_status', inputs={'run_id': run_id})`
-  - Return `ok_result({"status": status_dict})`
-- [ ] T030 [US3] Implement `flow_step(run_id, max_actions=1)` in `hermes_flow/tools.py`:
-  - Open store, call `evaluate_gate(run_id, store.load_run(run_id).current_state_id, store)`
-  - If gate satisfied → call `advance_state()`, return new state
-  - If gate not satisfied but has next_state_id (on_fail/on_blocked/on_exhausted) → call `advance_state()`, return new state
-  - If gate not satisfied with no next_state_id → return current pending status
-  - Also call `detect_idle_timeout()` before gate evaluation
-  - Wrap in `tracer.span(event_type='flow_step', ...)`
-- [ ] T031 [US3] Implement `flow_send(run_id, state_id, from_role, intended_recipients, kind, content, visibility, artifacts, requires_ack)` in `hermes_flow/tools.py`:
-  - Load state definition from store to get routing_policies
-  - Call `validate_message(run_id, state_id, from_role, intended_recipients, routing_policies, store)`
-  - If not valid → create MessageEnvelope with `delivery_outcome=REJECTED`, call `record_message_attempt`, return rejected result
-  - If valid → create MessageEnvelope with `delivery_outcome=DELIVERED`, call `record_message_attempt`, call `add_inbox_entries` for each authorized recipient, return delivered result with delivery details
-  - Wrap in `tracer.span(event_type='flow_send', ...)`
-- [ ] T032 [US3] Implement `flow_decide(run_id, state_id, role_id, value, reason, artifacts)` in `hermes_flow/tools.py`:
-  - Create Decision instance with new decision_id
-  - Call `store.record_decision(decision)`
-  - Append audit event via `store.append_audit_event()`
-  - Return ok_result with decision_id
-  - Wrap in `tracer.span(event_type='flow_decide', ...)`
-- [ ] T033 [US3] Implement `flow_pause(run_id, reason)` in `hermes_flow/tools.py`:
-  - Open store, call `store.update_status(run_id, RunStatus.PAUSED)`
-  - Append audit event with reason
-  - Return ok_result
-  - Wrap in `tracer.span(event_type='flow_pause', ...)`
-- [ ] T034 [US3] Implement `flow_resume(run_id, continuation_state="")` in `hermes_flow/tools.py`:
-  - Open store, if continuation_state provided → call `store.record_transition()` then `store.update_status()`
-  - Otherwise just `store.update_status(run_id, RunStatus.ACTIVE)`
-  - Append audit event
-  - Return ok_result
-  - Wrap in `tracer.span(event_type='flow_resume', ...)`
-- [ ] T035 [US3] Implement `flow_abort(run_id, reason)` in `hermes_flow/tools.py`:
-  - Open store, call `store.update_status(run_id, RunStatus.ABORTED)`
-  - Append audit event with reason
-  - Return ok_result
-  - Wrap in `tracer.span(event_type='flow_abort', ...)`
+- [X] T029 [US3] Implement `flow_status()` in `hermes_flow/tools.py`.
+- [X] T030 [US3] Implement `flow_step()` in `hermes_flow/tools.py` with gate evaluation and idle timeout.
+- [X] T031 [US3] Implement `flow_send()` in `hermes_flow/tools.py` with router validation and inbox delivery.
+- [X] T032 [US3] Implement `flow_decide()` in `hermes_flow/tools.py` with decision persistence and audit.
+- [X] T033 [US3] Implement `flow_pause()` in `hermes_flow/tools.py`.
+- [X] T034 [US3] Implement `flow_resume()` in `hermes_flow/tools.py`.
+- [X] T035 [US3] Implement `flow_abort()` in `hermes_flow/tools.py`.
 
 **Checkpoint**: US3 is complete when all tool handler tests pass (T020–T028) and `python -m pytest tests/hermes_flow/test_tools.py` reports all passing.
 
