@@ -54,9 +54,9 @@
 ### Tests for User Story 1
 
 - [ ] T010 [P] [US1] Write span tree validity test in `tests/hermes_flow/test_trace.py` proving that a call to `flow_init` (via tools.py) with a valid flow produces at least 5 spans (root: flow_init, children: load_flow, validate_flow, create_run) with correct `parent_span_id` chain.
-- [ ] T011 [P] [US1] Write nested span test in `tests/hermes_flow/test_trace.py` proving that a deeply nested call (e.g., flow_init → load_flow → inner_parse) produces correct parent_span_id at each level, up to at least 5 levels deep.
-- [ ] T012 [P] [US1] Write span inputs/outputs test in `tests/hermes_flow/test_trace.py` proving that each span records the `inputs` dict on enter and `outputs`/`decisions` on exit with the correct values.
-- [ ] T013 [P] [US1] Write trace isolation test in `tests/hermes_flow/test_trace.py` proving that two concurrent trace_ids (simulated by sequential calls) produce spans with different `trace_id` values and no cross-contamination.
+- [ ] T011 [US1] Write nested span test in `tests/hermes_flow/test_trace.py` proving that a deeply nested call (e.g., flow_init → load_flow → inner_parse) produces correct parent_span_id at each level, up to at least 5 levels deep. (Not [P] — shares file T010.)
+- [ ] T012 [US1] Write span inputs/outputs test in `tests/hermes_flow/test_trace.py` proving that each span records the `inputs` dict on enter and `outputs`/`decisions` on exit with the correct values. (Not [P] — shares file T010.)
+- [ ] T013 [US1] Write trace isolation test in `tests/hermes_flow/test_trace.py` proving that two concurrent trace_ids (simulated by sequential calls) produce spans with different `trace_id` values and no cross-contamination. (Not [P] — shares file T010.)
 
 ### Implementation for User Story 1
 
@@ -84,8 +84,8 @@
 ### Tests for User Story 2
 
 - [ ] T024 [P] [US2] Write get_trace query test in `tests/hermes_flow/test_storage.py` proving `RuntimeStore.get_trace(run_id, trace_id)` returns all spans for that trace_id in chronological order across a reopen cycle.
-- [ ] T025 [P] [US2] Write get_traces_by_event query test in `tests/hermes_flow/test_storage.py` proving `get_traces_by_event(run_id, 'gate_evaluate')` returns only gate evaluation spans.
-- [ ] T026 [P] [US2] Write trace_id isolation test in `tests/hermes_flow/test_storage.py` proving that with spans from 3 different trace_ids in the same run, `get_trace()` for each trace_id returns only its own spans with no mixing.
+- [ ] T025 [US2] Write get_traces_by_event query test in `tests/hermes_flow/test_storage.py` proving `get_traces_by_event(run_id, 'gate_evaluate')` returns only gate evaluation spans. (Not [P] — shares file T024.)
+- [ ] T026 [US2] Write trace_id isolation test in `tests/hermes_flow/test_storage.py` proving that with spans from 3 different trace_ids in the same run, `get_trace()` for each trace_id returns only its own spans with no mixing. (Not [P] — shares file T024.)
 
 ### Implementation for User Story 2
 
@@ -105,9 +105,9 @@
 ### Tests for User Story 3
 
 - [ ] T029 [P] [US3] Write error span test in `tests/hermes_flow/test_trace.py` proving that a traced function raising `FileNotFoundError` produces a span with `error.type='FileNotFoundError'`, `error.message` containing the path, and `error.traceback` containing the traceback.
-- [ ] T030 [P] [US3] Write error span test for `FlowValidationError` in `tests/hermes_flow/test_trace.py` proving the span captures the error type and the validation error details in `inputs`.
-- [ ] T031 [P] [US3] Write truncation test in `tests/hermes_flow/test_trace.py` proving that a span with inputs exceeding 100KB is truncated, `truncated=True` is set, and the field value is replaced with `"<truncated: N chars>"`.
-- [ ] T032 [P] [US3] Write atexit flush test in `tests/hermes_flow/test_trace.py` proving that if the process exits via `sys.exit()` mid-span (simulated by raising SystemExit inside a span), the span is still written to trace_events (via atexit handler).
+- [ ] T030 [US3] Write error span test for `FlowValidationError` in `tests/hermes_flow/test_trace.py` proving the span captures the error type and the validation error details in `inputs`. (Not [P] -- shares file T029.)
+- [ ] T031 [US3] Write truncation test in `tests/hermes_flow/test_trace.py` proving that a span with inputs exceeding 100KB is truncated, `truncated=True` is set, and the field value is replaced with a truncation marker. (Not [P] -- shares file T029.)
+- [ ] T032 [US3] Write atexit flush test in `tests/hermes_flow/test_trace.py` proving that if the process exits via `sys.exit()` mid-span (simulated by raising SystemExit inside a span), the span is still written to trace_events (via atexit handler). (Not [P] -- shares file T029.)
 
 ### Implementation for User Story 3
 
@@ -128,7 +128,7 @@
 
 - [ ] T035 [P] [US4] Write always-on test in `tests/hermes_flow/test_cli_quickstart.py` proving that a `flow_init` call without any tracing setup (no env vars, no flags) produces a non-empty trace_events table.
 - [ ] T036 [P] [US4] Write flow_status trace test in `tests/hermes_flow/test_trace.py` proving that `flow_status()` (which uses `get_tracer()`) does not crash when no tracer is set (defaults to NoOpTracer).
-- [ ] T037 [P] [US4] Write test reset test in `tests/hermes_flow/test_trace.py` proving that after `set_tracer(NoOpTracer())`, subsequent spans are no-op (trace_events stays empty).
+- [ ] T037 [US4] Write test reset test in `tests/hermes_flow/test_trace.py` proving that after `set_tracer(NoOpTracer())`, subsequent spans are no-op (trace_events stays empty). (Not [P] -- shares file T036.)
 
 ### Implementation for User Story 4
 
