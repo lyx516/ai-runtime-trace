@@ -134,6 +134,27 @@ CREATE INDEX IF NOT EXISTS idx_audit_run ON audit_events(run_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_run ON messages(run_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_decisions_run ON decisions(run_id, state_id);
 CREATE INDEX IF NOT EXISTS idx_inboxes_run ON inboxes(run_id, role_id);
+
+CREATE TABLE IF NOT EXISTS trace_events (
+    trace_id TEXT NOT NULL,
+    span_id TEXT NOT NULL PRIMARY KEY,
+    parent_span_id TEXT NOT NULL DEFAULT '',
+    run_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    ts_start TEXT NOT NULL,
+    ts_end TEXT NOT NULL,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    inputs TEXT NOT NULL DEFAULT '{}',
+    outputs TEXT NOT NULL DEFAULT '{}',
+    decisions TEXT NOT NULL DEFAULT '{}',
+    error TEXT,
+    truncated INTEGER NOT NULL DEFAULT 0,
+    ended INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE INDEX IF NOT EXISTS idx_trace_events_trace ON trace_events(trace_id);
+CREATE INDEX IF NOT EXISTS idx_trace_events_type ON trace_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_trace_events_run  ON trace_events(run_id, trace_id);
 """
 
 

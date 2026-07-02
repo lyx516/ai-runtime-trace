@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "workflows": {
+    "speckit": {
+      "name": "Full SDD Cycle",
+      "version": "1.0.0",
+      "description": "Runs specify → plan → tasks → implement with review gates",
+      "source": "bundled",
+      "installed_at": "2026-07-01T14:09:48.102856+00:00",
+      "updated_at": "2026-07-01T14:09:48.102868+00:00"
+    },
+    "speckit-agent-loop": {
+      "name": "Spec Kit Planner-Developer Agent Loop",
+      "version": "1.0.0",
+      "description": "Runs Spec Kit development with planner/developer negotiation gates before implementation",
+      "source": "local",
+      "installed_at": "2026-07-01T22:31:05+08:00",
+      "updated_at": "2026-07-01T22:31:05+08:00"
+    }
+  }
+}

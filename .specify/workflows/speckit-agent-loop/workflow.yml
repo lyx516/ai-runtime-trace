@@ -1,0 +1,135 @@
+schema_version: "1.0"
+workflow:
+  id: "speckit-agent-loop"
+  name: "Spec Kit Planner-Developer Agent Loop"
+  version: "1.0.0"
+  author: "Hermes Agent"
+  description: "Runs Spec Kit development with planner/developer negotiation gates before implementation."
+
+requires:
+  speckit_version: ">=0.8.5"
+  project_root: "/Users/liyuxuan/ai-runtime-trace"
+  feature_dir: "specs/001-java-runtime-trace"
+
+roles:
+  orchestrator:
+    purpose: "Drive phases, enforce gates, and maintain durable state."
+  spec_steward:
+    purpose: "Maintain spec.md and clarification checklist."
+  planner:
+    purpose: "Produce plan/research/data-model/contracts/quickstart and revise until approved."
+  developer:
+    purpose: "Review implementability, approve before coding, then implement approved tasks."
+  spec_reviewer:
+    purpose: "Check implementation against spec.md and tasks.md."
+  quality_reviewer:
+    purpose: "Check constitution compliance, minimality, readability, and tests."
+  converger:
+    purpose: "Assess code vs artifacts and append remaining tasks only."
+
+markers:
+  propose: "[PROPOSE]"
+  question: "[QUESTION]"
+  disagree: "[DISAGREE]"
+  extend: "[EXTEND]"
+  plan_approved: "[PLAN_APPROVED]"
+  tasks_approved: "[TASKS_APPROVED]"
+  blocked: "[BLOCKED]"
+  converged: "[CONVERGED]"
+
+gates:
+  preflight:
+    type: "pre-flight"
+    checks:
+      - "repo root is /Users/liyuxuan/ai-runtime-trace"
+      - ".specify/scripts/bash/check-prerequisites.sh --json --paths-only succeeds"
+      - "spec.md exists and requirements checklist has no unchecked items"
+      - "constitution exists and is not a placeholder"
+    on_fail: "repair prerequisite or return to specify/clarify"
+  plan_review:
+    type: "revision"
+    max_cycles: 3
+    pass_marker: "[PLAN_APPROVED]"
+    on_fail: "planner revises plan artifacts from developer feedback"
+    on_exhausted: "escalate to human: narrow scope, accept risk, or rewrite plan"
+  tasks_review:
+    type: "revision"
+    max_cycles: 3
+    pass_marker: "[TASKS_APPROVED]"
+    on_fail: "planner regenerates or edits tasks.md from developer feedback"
+    on_exhausted: "escalate to human"
+  implementation_review:
+    type: "revision"
+    max_cycles_per_task: 3
+    order:
+      - "spec compliance review"
+      - "quality review"
+    on_fail: "developer fixes and same reviewer re-checks"
+    on_exhausted: "escalate to human"
+  converge:
+    type: "pre-flight"
+    pass_marker: "[CONVERGED]"
+    on_gap: "append convergence tasks, then return to implement"
+
+steps:
+  - id: preflight
+    role: orchestrator
+    command: "./.specify/scripts/bash/check-prerequisites.sh --json --paths-only"
+    gate: preflight
+
+  - id: clarify_if_needed
+    role: spec_steward
+    skill: "speckit-clarify"
+    condition: "only if new high-impact ambiguity is found"
+
+  - id: plan
+    role: planner
+    skill: "speckit-plan"
+    outputs:
+      - "specs/001-java-runtime-trace/plan.md"
+      - "specs/001-java-runtime-trace/research.md"
+      - "specs/001-java-runtime-trace/data-model.md"
+      - "specs/001-java-runtime-trace/contracts/"
+      - "specs/001-java-runtime-trace/quickstart.md"
+
+  - id: review_plan
+    role: developer
+    gate: plan_review
+    writes:
+      - "specs/001-java-runtime-trace/reviews/plan-review.md"
+
+  - id: tasks
+    role: planner
+    skill: "speckit-tasks"
+    requires_marker: "[PLAN_APPROVED]"
+    outputs:
+      - "specs/001-java-runtime-trace/tasks.md"
+
+  - id: review_tasks
+    role: developer
+    gate: tasks_review
+    writes:
+      - "specs/001-java-runtime-trace/reviews/tasks-review.md"
+
+  - id: implement
+    role: developer
+    skill: "speckit-implement"
+    requires_marker: "[TASKS_APPROVED]"
+    policy: "one story slice or small task group at a time"
+
+  - id: spec_review
+    role: spec_reviewer
+    gate: implementation_review
+
+  - id: quality_review
+    role: quality_reviewer
+    gate: implementation_review
+
+  - id: analyze_and_converge
+    role: converger
+    skills:
+      - "speckit-analyze"
+      - "speckit-converge"
+    gate: converge
+    on_gap: "return to implement"
+    on_clean: "finish"

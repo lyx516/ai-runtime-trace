@@ -20,7 +20,7 @@
 
 **Purpose**: Ensure the test package and any new directories exist. Minimal — the `hermes_flow` package and test structure already exist from feature 001.
 
-- [ ] T001 [P] Create test file `tests/hermes_flow/test_trace.py` with a pytest module docstring and no tests yet.
+- [X] T001 [P] Create test file `tests/hermes_flow/test_trace.py` with a pytest module docstring and no tests yet.
 
 **Checkpoint**: `tests/hermes_flow/test_trace.py` exists and `python -m pytest tests/hermes_flow/` still passes all prior tests.
 
@@ -32,14 +32,14 @@
 
 **⚠️ CRITICAL**: Span write strategy is 1-write on `__exit__` + `atexit` flush (Clarify Q1). Trace write failure must be swallowed with `logging.warning` (Clarify Q2).
 
-- [ ] T002 Define TraceSpan dataclass in `hermes_flow/trace.py` with fields matching data-model.md: `trace_id`, `span_id`, `parent_span_id`, `run_id`, `event_type`, `ts_start`, `ts_end`, `duration_ms`, `inputs`, `outputs`, `decisions`, `error`, `truncated`, `ended`. All JSON fields use `dict[str, Any]`. No enums needed — event_type is a plain string.
-- [ ] T003 Implement `Tracer` abstract base with `span(event_type, inputs=None)` context manager in `hermes_flow/trace.py`. Must use `contextvars` for per-coroutine span stack.
-- [ ] T004 Implement `NoOpTracer` in `hermes_flow/trace.py` that yields instantly without recording anything.
-- [ ] T005 Implement `_truncate_field(value, max_bytes=100_000)` helper in `hermes_flow/trace.py` that truncates a dict/str to `max_bytes` and returns `(truncated_value, True)` if truncated.
-- [ ] T006 Implement `SqliteTracer` in `hermes_flow/trace.py`. On `__enter__`: create in-memory TraceSpan with `_now()` as ts_start, push to contextvar stack, inherit `trace_id` and `parent_span_id` from parent span or generate fresh. On `__exit__` (both success and exception): compute `ts_end`/`duration_ms`, serialize to dict (use `to_dict` from schemas), truncate oversized fields, write single INSERT to `trace_events` via `RuntimeStore` connection. On exception: capture `error` (type, message, traceback). If INSERT fails: catch exception, `logging.warning("trace write failed: ...")`, do not re-raise. Register `atexit` handler that flushes any unclosed spans (span with `ended=False`).
-- [ ] T007 Implement module-level `set_tracer(tracer)` and `get_tracer()` in `hermes_flow/trace.py`. Default value is `NoOpTracer()`. `get_tracer()` returns the current instance.
-- [ ] T008 [P] Add `trace_events` table to `init_schema()` in `hermes_flow/storage.py` using the DDL from data-model.md (columns: trace_id, span_id PK, parent_span_id, run_id, event_type, ts_start, ts_end, duration_ms, inputs, outputs, decisions, error, truncated, ended). Include indexes on `trace_id`, `event_type`, and `(run_id, trace_id)`.
-- [ ] T009 [P] Write tracer unit tests in `tests/hermes_flow/test_trace.py`: NoOpTracer does nothing, SqliteTracer writes one span, span has all required fields, `ts_end >= ts_start`, `duration_ms >= 0`.
+- [X] T002 Define TraceSpan dataclass in `hermes_flow/trace.py` with fields matching data-model.md: `trace_id`, `span_id`, `parent_span_id`, `run_id`, `event_type`, `ts_start`, `ts_end`, `duration_ms`, `inputs`, `outputs`, `decisions`, `error`, `truncated`, `ended`. All JSON fields use `dict[str, Any]`. No enums needed — event_type is a plain string.
+- [X] T003 Implement `Tracer` abstract base with `span(event_type, inputs=None)` context manager in `hermes_flow/trace.py`. Must use `contextvars` for per-coroutine span stack.
+- [X] T004 Implement `NoOpTracer` in `hermes_flow/trace.py` that yields instantly without recording anything.
+- [X] T005 Implement `_truncate_field(value, max_bytes=100_000)` helper in `hermes_flow/trace.py` that truncates a dict/str to `max_bytes` and returns `(truncated_value, True)` if truncated.
+- [X] T006 Implement `SqliteTracer` in `hermes_flow/trace.py`. On `__enter__`: create in-memory TraceSpan with `_now()` as ts_start, push to contextvar stack, inherit `trace_id` and `parent_span_id` from parent span or generate fresh. On `__exit__` (both success and exception): compute `ts_end`/`duration_ms`, serialize to dict (use `to_dict` from schemas), truncate oversized fields, write single INSERT to `trace_events` via `RuntimeStore` connection. On exception: capture `error` (type, message, traceback). If INSERT fails: catch exception, `logging.warning("trace write failed: ...")`, do not re-raise. Register `atexit` handler that flushes any unclosed spans (span with `ended=False`).
+- [X] T007 Implement module-level `set_tracer(tracer)` and `get_tracer()` in `hermes_flow/trace.py`. Default value is `NoOpTracer()`. `get_tracer()` returns the current instance.
+- [X] T008 [P] Add `trace_events` table to `init_schema()` in `hermes_flow/storage.py` using the DDL from data-model.md (columns: trace_id, span_id PK, parent_span_id, run_id, event_type, ts_start, ts_end, duration_ms, inputs, outputs, decisions, error, truncated, ended). Include indexes on `trace_id`, `event_type`, and `(run_id, trace_id)`.
+- [X] T009 [P] Write tracer unit tests in `tests/hermes_flow/test_trace.py`: NoOpTracer does nothing, SqliteTracer writes one span, span has all required fields, `ts_end >= ts_start`, `duration_ms >= 0`.
 
 **Checkpoint**: `python -m pytest tests/hermes_flow/test_trace.py` passes. The existing 38 tests in other files still pass.
 
