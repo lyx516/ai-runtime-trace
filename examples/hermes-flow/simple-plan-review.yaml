@@ -1,0 +1,71 @@
+flow_id: simple-plan-review
+name: Simple Plan Review
+version: 1
+initial_state_id: PLAN
+terminal_state_ids:
+  - DONE
+  - ABORT
+
+agents:
+  planner:
+    profile_name: flow-planner
+    soul: Produce minimal executable plans.
+    skills:
+      - speckit-plan
+    toolsets:
+      - file
+    memory_mode: run_isolated
+    read_scope:
+      - spec.md
+    write_scope:
+      - artifacts/plan.md
+  reviewer:
+    profile_name: flow-reviewer
+    soul: Review plans for scope and testability.
+    skills:
+      - speckit-analyze
+    toolsets:
+      - file
+    memory_mode: run_isolated
+    read_scope:
+      - spec.md
+      - artifacts/plan.md
+    write_scope:
+      - artifacts/reviews/plan-review.md
+
+states:
+  PLAN:
+    actors:
+      - planner
+    output_artifacts:
+      - artifacts/plan.md
+    transitions:
+      on_complete: REVIEW
+  REVIEW:
+    actors:
+      - reviewer
+    gate:
+      type: decision
+      required_roles:
+        - reviewer
+      pass_values:
+        - APPROVE
+        - PASS
+      fail_values:
+        - REQUEST_CHANGES
+        - FAIL
+      blocked_values:
+        - BLOCKED
+      on_pass: DONE
+      on_fail: PLAN
+      on_blocked: HUMAN_ESCALATION
+      max_rounds: 3
+  HUMAN_ESCALATION:
+    human: true
+    transitions:
+      resume: PLAN
+      abort: ABORT
+  DONE:
+    terminal: true
+  ABORT:
+    terminal: true

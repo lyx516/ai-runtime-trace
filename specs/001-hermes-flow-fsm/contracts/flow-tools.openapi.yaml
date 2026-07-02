@@ -1,0 +1,383 @@
+openapi: 3.1.0
+info:
+  title: Hermes Flow Tool Contracts
+  version: 0.1.0
+  description: Contract for Hermes Flow plugin tools. These paths model tool calls, not public HTTP endpoints.
+paths:
+  /flow/init:
+    post:
+      operationId: flow_init
+      summary: Create a new project-local flow run from a flow definition
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project_root, flow_path]
+              properties:
+                project_root:
+                  type: string
+                flow_path:
+                  type: string
+                run_name:
+                  type: string
+                dry_run:
+                  type: boolean
+                  default: false
+      responses:
+        '200':
+          description: Flow run initialized or validation report returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowInitResult'
+  /flow/status:
+    post:
+      operationId: flow_status
+      summary: Inspect current run state, gates, messages, and next actions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [run_id]
+              properties:
+                run_id:
+                  type: string
+                include_recent_messages:
+                  type: boolean
+                  default: true
+      responses:
+        '200':
+          description: Current status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowStatus'
+  /flow/step:
+    post:
+      operationId: flow_step
+      summary: Execute the next eligible state action or gate evaluation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [run_id]
+              properties:
+                run_id:
+                  type: string
+                max_actions:
+                  type: integer
+                  minimum: 1
+                  maximum: 10
+                  default: 1
+      responses:
+        '200':
+          description: Step result and updated run state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StepResult'
+  /flow/send:
+    post:
+      operationId: flow_send
+      summary: Submit a scoped runtime message with atomic recipient validation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendRequest'
+      responses:
+        '200':
+          description: Delivered or rejected message envelope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageEnvelope'
+  /flow/decide:
+    post:
+      operationId: flow_decide
+      summary: Record an agent or human decision for the current gate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [run_id, state_id, role_id, value]
+              properties:
+                run_id:
+                  type: string
+                state_id:
+                  type: string
+                role_id:
+                  type: string
+                value:
+                  type: string
+                  enum: [APPROVE, PASS, REQUEST_CHANGES, FAIL, BLOCKED, ACK]
+                reason:
+                  type: string
+                artifacts:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Decision recorded and gate status returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GateStatus'
+  /flow/pause:
+    post:
+      operationId: flow_pause
+      summary: Pause an active run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [run_id, reason]
+              properties:
+                run_id:
+                  type: string
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: Updated status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowStatus'
+  /flow/resume:
+    post:
+      operationId: flow_resume
+      summary: Resume a paused or escalated run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [run_id]
+              properties:
+                run_id:
+                  type: string
+                continuation_state:
+                  type: string
+      responses:
+        '200':
+          description: Updated status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowStatus'
+  /flow/abort:
+    post:
+      operationId: flow_abort
+      summary: Abort a run with an audit reason
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [run_id, reason]
+              properties:
+                run_id:
+                  type: string
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: Terminal aborted status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowStatus'
+components:
+  schemas:
+    FlowInitResult:
+      type: object
+      required: [ok, run_id, current_state_id, agents, artifact_root]
+      properties:
+        ok:
+          type: boolean
+        run_id:
+          type: string
+        current_state_id:
+          type: string
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentBinding'
+        artifact_root:
+          type: string
+        validation_errors:
+          type: array
+          items:
+            type: string
+    FlowStatus:
+      type: object
+      required: [run_id, status, current_state_id, round_counters, next_actions]
+      properties:
+        run_id:
+          type: string
+        status:
+          type: string
+          enum: [active, paused, completed, aborted, escalated]
+        current_state_id:
+          type: string
+        pending_gate:
+          anyOf:
+            - $ref: '#/components/schemas/GateStatus'
+            - type: 'null'
+          description: Present for active gated states; null for terminal states (completed/aborted) and unconditional states.
+        round_counters:
+          type: object
+          additionalProperties:
+            type: integer
+        memory_modes:
+          type: object
+          additionalProperties:
+            type: string
+        recent_messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/MessageEnvelope'
+        next_actions:
+          type: array
+          items:
+            type: string
+    StepResult:
+      type: object
+      required: [run_id, previous_state_id, current_state_id, actions_taken, status]
+      properties:
+        run_id:
+          type: string
+        previous_state_id:
+          type: string
+        current_state_id:
+          type: string
+        actions_taken:
+          type: array
+          items:
+            type: string
+        status:
+          $ref: '#/components/schemas/FlowStatus'
+    SendRequest:
+      type: object
+      required: [run_id, state_id, from_role, intended_recipients, kind, content]
+      properties:
+        run_id:
+          type: string
+        state_id:
+          type: string
+        from_role:
+          type: string
+        intended_recipients:
+          type: array
+          items:
+            type: string
+        visibility:
+          type: string
+          enum: [targeted, group, orchestrator, human, all]
+        kind:
+          type: string
+        content:
+          type: string
+        artifacts:
+          type: array
+          items:
+            type: string
+        requires_ack:
+          type: boolean
+          default: false
+    MessageEnvelope:
+      type: object
+      required: [message_id, run_id, state_id, from_role, intended_recipients, delivery_outcome]
+      properties:
+        message_id:
+          type: string
+        run_id:
+          type: string
+        state_id:
+          type: string
+        from_role:
+          type: string
+        intended_recipients:
+          type: array
+          items:
+            type: string
+        authorized_recipients:
+          type: array
+          items:
+            type: string
+        recipient_availability:
+          type: object
+          additionalProperties:
+            type: boolean
+        delivery_outcome:
+          type: string
+          enum: [delivered, rejected]
+        rejection_reason:
+          type: string
+        artifacts:
+          type: array
+          items:
+            type: string
+    GateStatus:
+      type: object
+      required: [state_id, satisfied, required_roles, decisions]
+      properties:
+        state_id:
+          type: string
+        satisfied:
+          type: boolean
+        required_roles:
+          type: array
+          items:
+            type: string
+        decisions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Decision'
+        next_state_if_ready:
+          type: string
+        blocked_reason:
+          type: string
+    Decision:
+      type: object
+      required: [decision_id, role_id, value]
+      properties:
+        decision_id:
+          type: string
+        role_id:
+          type: string
+        value:
+          type: string
+        reason:
+          type: string
+        artifacts:
+          type: array
+          items:
+            type: string
+    AgentBinding:
+      type: object
+      required: [role_id, profile_name, session_id, memory_mode]
+      properties:
+        role_id:
+          type: string
+        profile_name:
+          type: string
+        session_id:
+          type: string
+        memory_mode:
+          type: string

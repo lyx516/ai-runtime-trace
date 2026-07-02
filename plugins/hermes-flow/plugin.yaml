@@ -1,0 +1,3 @@
+name: hermes-flow
+description: Finite-state-machine agent loop orchestrator for bounded multi-agent collaboration.
+version: 0.1.0

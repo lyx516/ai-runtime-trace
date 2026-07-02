@@ -1,0 +1,588 @@
+"""Project-local runtime persistence and audit trail."""
+
+from __future__ import annotations
+
+import sqlite3
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+from hermes_flow.errors import RuntimeStateError
+from hermes_flow.schemas import (
+    AgentBinding,
+    Artifact,
+    Decision,
+    FlowInitResult,
+    FlowRun,
+    FlowStatus,
+    GateStatus,
+    Inbox,
+    MemoryMode,
+    MessageEnvelope,
+    RunStatus,
+    StepResult,
+    _now,
+    to_dict,
+)
+
+
+# ── SQLite schema DDL ───────────────────────────────────────────────────────
+
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS runs (
+    run_id TEXT PRIMARY KEY,
+    flow_id TEXT NOT NULL,
+    flow_version TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    current_state_id TEXT NOT NULL,
+    round_counters TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    agent_bindings TEXT NOT NULL DEFAULT '[]',
+    memory_modes TEXT NOT NULL DEFAULT '{}',
+    artifact_root TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agents (
+    row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    role_id TEXT NOT NULL,
+    profile_name TEXT NOT NULL,
+    session_id TEXT NOT NULL DEFAULT '',
+    memory_mode TEXT NOT NULL DEFAULT 'run_isolated'
+);
+
+CREATE TABLE IF NOT EXISTS states (
+    row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    state_id TEXT NOT NULL,
+    state_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+    message_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    state_id TEXT NOT NULL,
+    from_role TEXT NOT NULL,
+    intended_recipients TEXT NOT NULL,
+    authorized_recipients TEXT NOT NULL DEFAULT '[]',
+    recipient_availability TEXT NOT NULL DEFAULT '{}',
+    visibility TEXT NOT NULL DEFAULT 'targeted',
+    kind TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    artifacts TEXT NOT NULL DEFAULT '[]',
+    requires_ack INTEGER NOT NULL DEFAULT 0,
+    delivery_outcome TEXT NOT NULL DEFAULT 'delivered',
+    rejection_reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS inboxes (
+    row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    role_id TEXT NOT NULL,
+    state_id TEXT NOT NULL,
+    message_id TEXT NOT NULL REFERENCES messages(message_id),
+    generated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS artifacts (
+    artifact_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    state_id TEXT NOT NULL,
+    produced_by_role TEXT NOT NULL,
+    path TEXT NOT NULL,
+    artifact_type TEXT NOT NULL DEFAULT '',
+    visibility_scope TEXT NOT NULL DEFAULT 'run',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS decisions (
+    decision_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    state_id TEXT NOT NULL,
+    role_id TEXT NOT NULL,
+    value TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    artifacts TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS transitions (
+    row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    from_state_id TEXT NOT NULL,
+    to_state_id TEXT NOT NULL,
+    gate_result TEXT NOT NULL DEFAULT '',
+    round_counter INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS audit_events (
+    event_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    state_id TEXT NOT NULL DEFAULT '',
+    event_type TEXT NOT NULL,
+    actor TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_run ON audit_events(run_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_messages_run ON messages(run_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_decisions_run ON decisions(run_id, state_id);
+CREATE INDEX IF NOT EXISTS idx_inboxes_run ON inboxes(run_id, role_id);
+"""
+
+
+# ── RuntimeStore ────────────────────────────────────────────────────────────
+
+class RuntimeStore:
+    """Project-local runtime store backed by per-run SQLite."""
+
+    def __init__(self, run_dir: str | Path):
+        self.run_dir = Path(run_dir)
+        self._db_path = self.run_dir / "state.sqlite"
+        self._conn: Optional[sqlite3.Connection] = None
+
+    # ── Connection lifecycle ──────────────────────────────────────────────
+
+    def connect(self) -> sqlite3.Connection:
+        if self._conn is None:
+            self._conn = sqlite3.connect(str(self._db_path))
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA foreign_keys=ON")
+        return self._conn
+
+    def close(self) -> None:
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+
+    def __enter__(self) -> "RuntimeStore":
+        self.connect()
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        self.close()
+
+    # ── Schema ────────────────────────────────────────────────────────────
+
+    def init_schema(self) -> None:
+        """Create all tables if they do not exist."""
+        conn = self.connect()
+        conn.executescript(SCHEMA_SQL)
+        conn.commit()
+
+    # ── Transaction helper ─────────────────────────────────────────────────
+
+    def transaction(self) -> _Transaction:
+        """Return a context manager that commits on success, rolls back on exception."""
+        return _Transaction(self.connect())
+
+    # ── Audit helper ──────────────────────────────────────────────────────
+
+    def append_audit_event(
+        self,
+        run_id: str,
+        event_type: str,
+        state_id: str = "",
+        actor: str = "",
+        payload: dict[str, Any] | None = None,
+    ) -> str:
+        """Append an audit event. Returns the event id."""
+        event_id = uuid.uuid4().hex[:12]
+        conn = self.connect()
+        conn.execute(
+            """INSERT INTO audit_events (event_id, run_id, state_id, event_type, actor, payload_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (event_id, run_id, state_id, event_type, actor,
+             json_dumps(payload or {}), _now()),
+        )
+        conn.commit()
+        return event_id
+
+    # ── Create run ────────────────────────────────────────────────────────
+
+    def create_run(
+        self,
+        flow_id: str,
+        flow_version: str,
+        initial_state_id: str,
+        agent_bindings: list[AgentBinding],
+        memory_modes: dict[str, str],
+        artifact_root: str,
+        states_json: dict[str, Any],
+    ) -> FlowRun:
+        """Initialize a new run directory and SQLite database."""
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        self.init_schema()
+
+        run_id = uuid.uuid4().hex[:12]
+        now = _now()
+
+        run = FlowRun(
+            run_id=run_id,
+            flow_id=flow_id,
+            flow_version=flow_version,
+            status=RunStatus.ACTIVE,
+            current_state_id=initial_state_id,
+            round_counters={},
+            created_at=now,
+            updated_at=now,
+            agent_bindings=agent_bindings,
+            memory_modes=memory_modes,
+            artifact_root=artifact_root,
+        )
+
+        conn = self.connect()
+        conn.execute(
+            """INSERT INTO runs (run_id, flow_id, flow_version, status, current_state_id,
+               round_counters, created_at, updated_at, agent_bindings, memory_modes, artifact_root)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (run.run_id, run.flow_id, run.flow_version, run.status.value,
+             run.current_state_id, json_dumps(run.round_counters),
+             run.created_at, run.updated_at, json_dumps([to_dict(b) for b in run.agent_bindings]),
+             json_dumps(run.memory_modes), run.artifact_root),
+        )
+
+        # Persist states
+        for state_id, state_data in states_json.items():
+            conn.execute(
+                "INSERT INTO states (run_id, state_id, state_json) VALUES (?, ?, ?)",
+                (run_id, state_id, json_dumps(state_data)),
+            )
+
+        # Persist agent bindings
+        for b in agent_bindings:
+            conn.execute(
+                "INSERT INTO agents (run_id, role_id, profile_name, session_id, memory_mode) VALUES (?, ?, ?, ?, ?)",
+                (run_id, b.role_id, b.profile_name, b.session_id, b.memory_mode.value),
+            )
+
+        # Initial audit event
+        self.append_audit_event(
+            run_id=run_id,
+            event_type="run_created",
+            state_id=initial_state_id,
+            actor="system",
+            payload={"flow_id": flow_id, "flow_version": flow_version},
+        )
+
+        conn.commit()
+        return run
+
+    # ── Load status ───────────────────────────────────────────────────────
+
+    def load_status(self, run_id: str) -> FlowStatus:
+        """Assemble FlowStatus from project-local tables."""
+        conn = self.connect()
+        row = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+        if row is None:
+            raise RuntimeStateError(f"Run {run_id} not found")
+
+        status = FlowStatus(
+            run_id=row["run_id"],
+            status=RunStatus(row["status"]),
+            current_state_id=row["current_state_id"],
+            round_counters=json_loads(row["round_counters"]),
+            memory_modes=json_loads(row["memory_modes"]),
+        )
+
+        # Recent messages (last 10)
+        msg_rows = conn.execute(
+            "SELECT * FROM messages WHERE run_id = ? ORDER BY created_at DESC LIMIT 10",
+            (run_id,),
+        ).fetchall()
+        status.recent_messages = [_row_to_message(r) for r in reversed(msg_rows)]
+
+        # Pending gate — build from decisions in current state
+        current_state_id = status.current_state_id
+        dec_rows = conn.execute(
+            "SELECT * FROM decisions WHERE run_id = ? AND state_id = ? ORDER BY created_at",
+            (run_id, current_state_id),
+        ).fetchall()
+        decisions = [_row_to_decision(r) for r in dec_rows]
+
+        # Determine next actions
+        if status.status in (RunStatus.COMPLETED, RunStatus.ABORTED):
+            status.next_actions = ["audit"]
+        elif status.status == RunStatus.PAUSED:
+            status.next_actions = ["resume", "abort"]
+        elif status.status == RunStatus.ESCALATED:
+            status.next_actions = ["resume", "abort"]
+        else:
+            status.next_actions = ["send", "decide", "step", "pause", "abort"]
+
+        return status
+
+    # ── Record message ────────────────────────────────────────────────────
+
+    def record_message_attempt(self, envelope: MessageEnvelope) -> None:
+        conn = self.connect()
+        conn.execute(
+            """INSERT INTO messages (message_id, run_id, state_id, from_role,
+               intended_recipients, authorized_recipients, recipient_availability,
+               visibility, kind, content, artifacts, requires_ack,
+               delivery_outcome, rejection_reason, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (envelope.message_id, envelope.run_id, envelope.state_id, envelope.from_role,
+             json_dumps(envelope.intended_recipients),
+             json_dumps(envelope.authorized_recipients),
+             json_dumps(envelope.recipient_availability),
+             envelope.visibility, envelope.kind, envelope.content,
+             json_dumps(envelope.artifacts), int(envelope.requires_ack),
+             envelope.delivery_outcome.value, envelope.rejection_reason,
+             envelope.created_at),
+        )
+        conn.commit()
+
+    # ── Add inbox entries ─────────────────────────────────────────────────
+
+    def add_inbox_entries(self, run_id: str, role_id: str, state_id: str, message_ids: list[str]) -> None:
+        conn = self.connect()
+        now = _now()
+        for mid in message_ids:
+            conn.execute(
+                "INSERT INTO inboxes (run_id, role_id, state_id, message_id, generated_at) VALUES (?, ?, ?, ?, ?)",
+                (run_id, role_id, state_id, mid, now),
+            )
+        conn.commit()
+
+    # ── Record decision ───────────────────────────────────────────────────
+
+    def record_decision(self, decision: Decision) -> None:
+        conn = self.connect()
+        conn.execute(
+            """INSERT INTO decisions (decision_id, run_id, state_id, role_id, value, reason, artifacts, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (decision.decision_id, decision.run_id, decision.state_id,
+             decision.role_id, decision.value, decision.reason,
+             json_dumps(decision.artifacts), decision.created_at),
+        )
+        conn.commit()
+
+    # ── Record artifact ───────────────────────────────────────────────────
+
+    def record_artifact(self, artifact: Artifact) -> None:
+        conn = self.connect()
+        conn.execute(
+            """INSERT INTO artifacts (artifact_id, run_id, state_id, produced_by_role, path, artifact_type, visibility_scope, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (artifact.artifact_id, artifact.run_id, artifact.state_id,
+             artifact.produced_by_role, artifact.path, artifact.artifact_type,
+             artifact.visibility_scope, artifact.created_at),
+        )
+        conn.commit()
+
+    # ── State transitions ─────────────────────────────────────────────────
+
+    def record_transition(self, run_id: str, from_state: str, to_state: str, gate_result: str = "", round_counter: int = 0) -> None:
+        conn = self.connect()
+        conn.execute(
+            "UPDATE runs SET current_state_id = ?, updated_at = ? WHERE run_id = ?",
+            (to_state, _now(), run_id),
+        )
+        conn.execute(
+            """INSERT INTO transitions (run_id, from_state_id, to_state_id, gate_result, round_counter, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (run_id, from_state, to_state, gate_result, round_counter, _now()),
+        )
+        conn.commit()
+
+    # ── Update run status ─────────────────────────────────────────────────
+
+    def update_status(self, run_id: str, status: RunStatus, completed_at: str | None = None) -> None:
+        conn = self.connect()
+        if completed_at:
+            conn.execute(
+                "UPDATE runs SET status = ?, updated_at = ?, completed_at = ? WHERE run_id = ?",
+                (status.value, _now(), completed_at, run_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE runs SET status = ?, updated_at = ? WHERE run_id = ?",
+                (status.value, _now(), run_id),
+            )
+        conn.commit()
+
+    # ── Resume / reopen ───────────────────────────────────────────────────
+
+    def resume_run(self, run_id: str) -> FlowRun:
+        """Reopen existing state.sqlite and return the run record."""
+        if not self._db_path.exists():
+            raise RuntimeStateError(f"Run {run_id} not found at {self._db_path}")
+        self.init_schema()
+        row = self.connect().execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+        if row is None:
+            raise RuntimeStateError(f"Run {run_id} not found in database")
+        return _row_to_run(row)
+
+    # ── Audit export ──────────────────────────────────────────────────────
+
+    def export_audit(self, run_id: str) -> list[dict[str, Any]]:
+        conn = self.connect()
+        rows = conn.execute(
+            "SELECT * FROM audit_events WHERE run_id = ? ORDER BY created_at",
+            (run_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Load decisions for a state (for gate evaluation) ──────────────────
+
+    def load_decisions(self, run_id: str, state_id: str) -> list[Decision]:
+        conn = self.connect()
+        rows = conn.execute(
+            "SELECT * FROM decisions WHERE run_id = ? AND state_id = ? ORDER BY created_at",
+            (run_id, state_id),
+        ).fetchall()
+        return [_row_to_decision(r) for r in rows]
+
+    # ── List visible messages for a role ──────────────────────────────────
+
+    def list_visible_messages(self, run_id: str, role_id: str) -> list[MessageEnvelope]:
+        conn = self.connect()
+        rows = conn.execute(
+            """SELECT m.* FROM messages m
+               INNER JOIN inboxes i ON m.message_id = i.message_id
+               WHERE i.run_id = ? AND i.role_id = ?
+               ORDER BY m.created_at""",
+            (run_id, role_id),
+        ).fetchall()
+        return [_row_to_message(r) for r in rows]
+
+    # ── List readable artifacts for a role ────────────────────────────────
+
+    def list_readable_artifacts(self, run_id: str, role_id: str, read_scope: list[str] | None = None) -> list[Artifact]:
+        conn = self.connect()
+        if read_scope:
+            placeholders = ",".join("?" for _ in read_scope)
+            rows = conn.execute(
+                f"""SELECT * FROM artifacts
+                    WHERE run_id = ? AND path IN ({placeholders})
+                    ORDER BY created_at""",
+                [run_id] + read_scope,
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM artifacts WHERE run_id = ? ORDER BY created_at",
+                (run_id,),
+            ).fetchall()
+        return [_row_to_artifact(r) for r in rows]
+
+    # ── Increment round counter ───────────────────────────────────────────
+
+    def increment_round(self, run_id: str, state_id: str) -> int:
+        conn = self.connect()
+        row = conn.execute("SELECT round_counters FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+        counters = json_loads(row["round_counters"])
+        current = counters.get(state_id, 0) + 1
+        counters[state_id] = current
+        conn.execute("UPDATE runs SET round_counters = ? WHERE run_id = ?",
+                     (json_dumps(counters), run_id))
+        conn.commit()
+        return current
+
+    def get_round_count(self, run_id: str, state_id: str) -> int:
+        conn = self.connect()
+        row = conn.execute("SELECT round_counters FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+        return json_loads(row["round_counters"]).get(state_id, 0)
+
+
+# ── Internal transaction context manager ─────────────────────────────────────
+
+class _Transaction:
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def __enter__(self) -> sqlite3.Connection:
+        self.conn.execute("BEGIN")
+        return self.conn
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        if exc_type is None:
+            self.conn.commit()
+        else:
+            self.conn.rollback()
+
+
+# ── JSON helpers ────────────────────────────────────────────────────────────
+
+def json_dumps(obj: Any) -> str:
+    import json
+    return json.dumps(obj, ensure_ascii=False, default=str)
+
+
+def json_loads(s: str) -> Any:
+    import json
+    if not s:
+        return {} if s == "" else s
+    return json.loads(s)
+
+
+# ── Row converters ──────────────────────────────────────────────────────────
+
+def _row_to_message(row: sqlite3.Row) -> MessageEnvelope:
+    return MessageEnvelope(
+        message_id=row["message_id"],
+        run_id=row["run_id"],
+        state_id=row["state_id"],
+        from_role=row["from_role"],
+        intended_recipients=json_loads(row["intended_recipients"]),
+        authorized_recipients=json_loads(row["authorized_recipients"]),
+        recipient_availability=json_loads(row["recipient_availability"]),
+        visibility=row["visibility"],
+        kind=row["kind"],
+        content=row["content"],
+        artifacts=json_loads(row["artifacts"]),
+        requires_ack=bool(row["requires_ack"]),
+        delivery_outcome=row["delivery_outcome"],
+        rejection_reason=row["rejection_reason"],
+        created_at=row["created_at"],
+    )
+
+
+def _row_to_decision(row: sqlite3.Row) -> Decision:
+    return Decision(
+        decision_id=row["decision_id"],
+        run_id=row["run_id"],
+        state_id=row["state_id"],
+        role_id=row["role_id"],
+        value=row["value"],
+        reason=row["reason"],
+        artifacts=json_loads(row["artifacts"]),
+        created_at=row["created_at"],
+    )
+
+
+def _row_to_artifact(row: sqlite3.Row) -> Artifact:
+    return Artifact(
+        artifact_id=row["artifact_id"],
+        run_id=row["run_id"],
+        state_id=row["state_id"],
+        produced_by_role=row["produced_by_role"],
+        path=row["path"],
+        artifact_type=row["artifact_type"],
+        visibility_scope=row["visibility_scope"],
+        created_at=row["created_at"],
+    )
+
+
+def _row_to_run(row: sqlite3.Row) -> FlowRun:
+    return FlowRun(
+        run_id=row["run_id"],
+        flow_id=row["flow_id"],
+        flow_version=row["flow_version"],
+        status=RunStatus(row["status"]),
+        current_state_id=row["current_state_id"],
+        round_counters=json_loads(row["round_counters"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        completed_at=row["completed_at"],
+        agent_bindings=[AgentBinding(**b) for b in json_loads(row["agent_bindings"])],
+        memory_modes=json_loads(row["memory_modes"]),
+        artifact_root=row["artifact_root"],
+    )
