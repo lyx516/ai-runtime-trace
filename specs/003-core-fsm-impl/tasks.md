@@ -20,7 +20,7 @@
 
 **Purpose**: Ensure the test files exist. The `hermes_flow` package, test structure, and existing tools.py already exist from features 001 and 002.
 
-- [ ] T001 [P] Create test files `tests/hermes_flow/test_engine.py` and `tests/hermes_flow/test_routing.py` with pytest module docstrings and no tests yet.
+- [X] T001 [P] Create test files `tests/hermes_flow/test_engine.py` and `tests/hermes_flow/test_routing.py` with pytest module docstrings and no tests yet.
 
 **Checkpoint**: Both test files exist and `python -m pytest tests/hermes_flow/` passes all prior tests.
 
@@ -49,36 +49,20 @@
 
 ### Tests for User Story 1
 
-- [ ] T002 [P] [US1] Write gate satisfaction test in `tests/hermes_flow/test_engine.py` proving that when all required roles submit pass_values decisions, `evaluate_gate()` returns `satisfied=True` with the correct `next_state_id` from the gate's `on_pass`.
-- [ ] T003 [US1] Write gate fail test in `tests/hermes_flow/test_engine.py` proving that when any required role submits a fail_values decision, `evaluate_gate()` returns `satisfied=False` with `next_state_id` from `on_fail`. (Not [P] — shares file T002.)
-- [ ] T004 [US1] Write gate blocked test in `tests/hermes_flow/test_engine.py` proving that a blocked decision returns `next_state_id` from `on_blocked`. (Not [P] — shares file T002.)
-- [ ] T005 [US1] Write round counter exhaustion test in `tests/hermes_flow/test_engine.py` proving that after max_rounds unsatisfied evaluations, the engine returns `next_state_id` from `on_exhausted`. (Not [P] — shares file T002.)
-- [ ] T006 [US1] Write idle timeout test in `tests/hermes_flow/test_engine.py` proving that `detect_idle_timeout()` transitions to `on_exhausted` when elapsed time exceeds `idle_timeout_seconds`. (Not [P] — shares file T002.)
-- [ ] T007 [US1] Write non-active run gate rejection test in `tests/hermes_flow/test_engine.py` proving that `evaluate_gate()` raises or returns an error for runs with status `paused`, `completed`, or `aborted`. (Not [P] — shares file T002.)
-- [ ] T008 [US1] Write gapless state test in `tests/hermes_flow/test_engine.py` proving that `evaluate_gate()` for a state with no gate returns `satisfied=False` with empty `next_state_id`. (Not [P] — shares file T002.)
-- [ ] T009 [US1] Write advance_state test in `tests/hermes_flow/test_engine.py` proving that `advance_state()` updates `run.current_state_id`, persists a transition record, and appends an audit event. (Not [P] — shares file T002.)
+- [X] T002 [P] [US1] Write gate satisfaction test in `tests/hermes_flow/test_engine.py` proving that when all required roles submit pass_values decisions, `evaluate_gate()` returns `satisfied=True` with the correct `next_state_id` from the gate's `on_pass`.
+- [X] T003 [US1] Write gate fail test in `tests/hermes_flow/test_engine.py` proving that when any required role submits a fail_values decision, `evaluate_gate()` returns `satisfied=False` with `next_state_id` from `on_fail`. (Not [P] — shares file T002.)
+- [X] T004 [US1] Write gate blocked test in `tests/hermes_flow/test_engine.py` proving that a blocked decision returns `next_state_id` from `on_blocked`. (Not [P] — shares file T002.)
+- [X] T005 [US1] Write round counter exhaustion test in `tests/hermes_flow/test_engine.py` proving that after max_rounds unsatisfied evaluations, the engine returns `next_state_id` from `on_exhausted`. (Not [P] — shares file T002.)
+- [X] T006 [US1] Write idle timeout test in `tests/hermes_flow/test_engine.py` proving that `detect_idle_timeout()` transitions to `on_exhausted` when elapsed time exceeds `idle_timeout_seconds`. (Not [P] — shares file T002.)
+- [X] T007 [US1] Write non-active run gate rejection test in `tests/hermes_flow/test_engine.py` proving that `evaluate_gate()` raises or returns an error for runs with status `paused`, `completed`, or `aborted`. (Not [P] — shares file T002.)
+- [X] T008 [US1] Write gapless state test in `tests/hermes_flow/test_engine.py` proving that `evaluate_gate()` for a state with no gate returns `satisfied=False` with empty `next_state_id`. (Not [P] — shares file T002.)
+- [X] T009 [US1] Write advance_state test in `tests/hermes_flow/test_engine.py` proving that `advance_state()` updates `run.current_state_id`, persists a transition record, and appends an audit event. (Not [P] — shares file T002.)
 
 ### Implementation for User Story 1
 
-- [ ] T010 [P] [US1] Create `hermes_flow/engine.py` with module docstring. Implement `evaluate_gate(run_id, state_id, store)` that:
-  - Validates run status is `active` (reject otherwise)
-  - Loads the state definition from store
-  - If state has no gate, return `GateResult(satisfied=False, next_state_id="", ...)`
-  - Queries transitions for last entry into this state → gets the timestamp
-  - Loads decisions created after that timestamp → these are the current round's decisions
-  - Determines which required roles have submitted decisions → builds `outstanding_roles`
-  - If any required role has not decided → return pending with outstanding_roles
-  - If all required roles have approved (pass_values) → return satisfied=True with on_pass target
-  - If any required role submitted fail_values → increment round counter, return on_fail target
-  - If any required role submitted blocked_values → increment round counter, return on_blocked target
-  - If round >= max_rounds (and max_rounds > 0) → return on_exhausted target
-- [ ] T011 [US1] Implement `detect_idle_timeout(run_id, state_id, store, now=None)` in `hermes_flow/engine.py` that loads the state's `idle_timeout_seconds`, finds the last activity timestamp (from last transition or audit event), and if elapsed exceeds the threshold, returns a timeout result with `on_exhausted` target.
-- [ ] T012 [US1] Implement `advance_state(run_id, from_state_id, to_state_id, gate_result, round_counter, store)` in `hermes_flow/engine.py` that:
-  - Calls `store.record_transition(run_id, from_state_id, to_state_id, gate_result, round_counter)`
-  - Updates `run.current_state_id`
-  - Resets round counter for the new state
-  - Appends an audit event for the transition
-  - If the new state is terminal, sets run status to `completed`
+- [X] T010 [P] [US1] Create `hermes_flow/engine.py` with engine functions (evaluate_gate, round counter, state transitions).
+- [X] T011 [US1] Implement `detect_idle_timeout()` in `hermes_flow/engine.py`. (Not [P] — shares file T010.)
+- [X] T012 [US1] Implement `advance_state()` in `hermes_flow/engine.py` with transition persistence, audit events, terminal detection. (Not [P] — shares file T010.)
 
 **Checkpoint**: US1 is complete when all engine unit tests pass (T002–T009) and `python -m pytest tests/hermes_flow/test_engine.py` reports all passing.
 
@@ -99,24 +83,16 @@
 
 ### Tests for User Story 2
 
-- [ ] T013 [P] [US2] Write router authorization rejection test in `tests/hermes_flow/test_routing.py` proving that a message intended for an unauthorized recipient returns `valid=False` with the unauthorized recipient in `invalid_recipients`.
-- [ ] T014 [US2] Write router availability rejection test in `tests/hermes_flow/test_routing.py` proving that a message intended for an inbox-inactive recipient returns `valid=False` with that recipient in `unavailable_recipients`. (Not [P] — shares file T013.)
-- [ ] T015 [US2] Write router acceptance test in `tests/hermes_flow/test_routing.py` proving that when all recipients are authorized and available, `valid=True` with no invalid/unavailable lists. (Not [P] — shares file T013.)
-- [ ] T016 [US2] Write router empty recipients test in `tests/hermes_flow/test_routing.py` proving that empty `intended_recipients` returns `valid=False` with an appropriate reason. (Not [P] — shares file T013.)
-- [ ] T017 [US2] Write router mixed rejection test in `tests/hermes_flow/test_routing.py` proving that a message with both unauthorized AND unavailable recipients is rejected with both lists populated. (Not [P] — shares file T013.)
-- [ ] T018 [US2] Write router no-store-mutation test in `tests/hermes_flow/test_routing.py` proving that `validate_message()` never calls any write method on the store (uses a mock). (Not [P] — shares file T013.)
+- [X] T013 [P] [US2] Write router authorization rejection test in `tests/hermes_flow/test_routing.py` proving that a message intended for an unauthorized recipient returns `valid=False` with the unauthorized recipient in `invalid_recipients`.
+- [X] T014 [US2] Write router availability rejection test in `tests/hermes_flow/test_routing.py` proving that a message intended for an inbox-inactive recipient returns `valid=False` with that recipient in `unavailable_recipients`. (Not [P] — shares file T013.)
+- [X] T015 [US2] Write router acceptance test in `tests/hermes_flow/test_routing.py` proving that when all recipients are authorized and available, `valid=True` with no invalid/unavailable lists. (Not [P] — shares file T013.)
+- [X] T016 [US2] Write router empty recipients test in `tests/hermes_flow/test_routing.py` proving that empty `intended_recipients` returns `valid=False` with an appropriate reason. (Not [P] — shares file T013.)
+- [X] T017 [US2] Write router mixed rejection test in `tests/hermes_flow/test_routing.py` proving that a message with both unauthorized AND unavailable recipients is rejected with both lists populated. (Not [P] — shares file T013.)
+- [X] T018 [US2] Write router no-store-mutation test in `tests/hermes_flow/test_routing.py` proving that `validate_message()` never calls any write method on the store (uses a mock). (Not [P] — shares file T013.)
 
 ### Implementation for User Story 2
 
-- [ ] T019 [US2] Create `hermes_flow/routing.py` with module docstring. Implement `validate_message(run_id, state_id, from_role, intended_recipients, routing_policies, store)` that:
-  - Validates `intended_recipients` is non-empty (reject if empty)
-  - Looks up the routing policy for `from_role` in `routing_policies` (dict: `{sender_role: [allowed_roles]}`)
-  - For each intended recipient:
-    - Check if recipient role is in the allowed list → otherwise add to `invalid_recipients`
-    - If authorized, check if recipient's current state is inbox-active (`message_acceptance=True` and not terminal) → otherwise add to `unavailable_recipients`
-  - If any invalid or unavailable recipients exist → return `RouteValidation(valid=False, ...)` with both lists
-  - If all recipients are both authorized and available → return `RouteValidation(valid=True, ...)`
-  - Return `RouteValidation` — NEVER write to store (use dataclass or plain dict)
+- [X] T019 [US2] Create `hermes_flow/routing.py` with `validate_message()` — pure validation, no store writes, returns RouteValidation with authorization + availability checks.
 
 **Checkpoint**: US2 is complete when all router unit tests pass (T013–T018) and `python -m pytest tests/hermes_flow/test_routing.py` reports all passing.
 
