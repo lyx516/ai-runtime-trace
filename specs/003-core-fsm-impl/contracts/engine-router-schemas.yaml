@@ -1,0 +1,77 @@
+openapi: 3.1.0
+info:
+  title: Hermes Flow Engine & Router Contracts
+  version: 0.1.0
+  description: >
+    Self-describing schemas for Engine gate evaluation results and
+    Router message validation results. These are NOT HTTP endpoints —
+    the contracts exist for test validation and AI-readable documentation.
+
+components:
+  schemas:
+    GateResult:
+      type: object
+      description: Result of Engine.evaluate_gate()
+      required: [satisfied, next_state_id, outstanding_roles, round, reason]
+      properties:
+        satisfied:
+          type: boolean
+          description: True when all required roles submitted pass_values decisions
+        next_state_id:
+          type: string
+          description: Target state for transition, or empty if pending
+        outstanding_roles:
+          type: array
+          items:
+            type: string
+          description: Required roles that haven't decided yet
+        round:
+          type: integer
+          minimum: 0
+          description: Current round number for this state
+        reason:
+          type: string
+          description: Human-readable explanation of gate status
+
+    RouteValidation:
+      type: object
+      description: Result of Router.validate_message()
+      required: [valid, authorized_recipients, invalid_recipients, unavailable_recipients, reason]
+      properties:
+        valid:
+          type: boolean
+          description: True only if ALL intended recipients are authorized AND available
+        authorized_recipients:
+          type: array
+          items:
+            type: string
+          description: Recipients that pass routing policy
+        invalid_recipients:
+          type: array
+          items:
+            type: string
+          description: Recipients not authorized by routing policy
+        unavailable_recipients:
+          type: array
+          items:
+            type: string
+          description: Recipients whose state does not accept messages
+        reason:
+          type: string
+          nullable: true
+          description: Null when valid, rejection reason when invalid
+
+    RunStatus:
+      type: string
+      enum: [active, paused, completed, aborted, escalated]
+      description: Lifecycle status of a flow run
+
+    DeliveryOutcome:
+      type: string
+      enum: [delivered, rejected]
+      description: Outcome of a message delivery attempt
+
+    DecisionValue:
+      type: string
+      enum: [APPROVE, PASS, REQUEST_CHANGES, FAIL, BLOCKED, ACK]
+      description: Allowed decision values for gate evaluation
