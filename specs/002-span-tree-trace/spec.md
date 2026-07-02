@@ -8,6 +8,14 @@
 
 **Input**: User description: "Add AI-readable execution trace (Span Tree) into the Hermes Flow FSM runtime. Every tool call, gate evaluation, message route, state transition, and context packet generation records a structured span with trace_id/span_id/parent_span_id into a trace_events SQLite table. The trace is always-on and targeted at debugging AI agents (not humans)."
 
+## Clarifications
+
+### Session 2026-07-02
+
+- Q: What write strategy should the tracer use — 2-write (enter→exit, crash-safe) or 1-write (exit only, better performance)? → A: Option B — write once on exit. `__enter__` allocates in memory; `__exit__` writes the complete span in a single INSERT on both success and exception paths. An `atexit` handler flushes any unclosed spans at process termination. This balances performance (1 I/O per span) with crash coverage (standard Python exit paths).
+- Q: If the trace INSERT fails (disk full, SQLite locked), should the main operation also fail? → A: Option A — swallow the exception, log a Python `logging.warning`, and let the main operation proceed. The tracer is a debugging aid, not a correctness-critical path.
+- Q: How does the global tracer switch from NoOpTracer to SqliteTracer — implicit auto-detection or explicit wiring? → A: Option B — explicit setter. `flow_init()` calls `set_tracer(SqliteTracer(store))` after successfully creating a run. Subsequent entry points (`flow_status`, `flow_send`, etc.) use the already-set tracer. This is the clearest control point.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Every execution step records a structured span (Priority: P1)
@@ -75,7 +83,7 @@ As an AI debugging agent, I want traces to be recorded automatically on every fl
 
 ### Edge Cases
 
-- A span begins but the process crashes before it closes (no end record). The trace should still contain the start record with `duration_ms: null` and `ended: false`.
+- A span begins but the process exits abnormally (SIGKILL, power loss) before it closes. Standard Python exit paths (unhandled exception, `sys.exit()`, `KeyboardInterrupt`) are covered by `__exit__` + `atexit`. For process-level kills, no record is written — the debugger should rely on the preceding span's outputs to infer incomplete work.
 - A trace_id collision across independent runs (UUID probability negligible, but include a unique run_id check in query paths).
 - Nested spans deeper than 10 levels (tool calling another tool calling another tool). The schema must support arbitrary nesting depth.
 - Very large inputs/outputs (>100KB in one span). The schema should truncate or hash oversized fields, recording a `truncated: true` flag.
@@ -99,10 +107,10 @@ As an AI debugging agent, I want traces to be recorded automatically on every fl
 - **FR-002**: The system MUST define a `trace_events` SQLite table matching the TraceSpan schema, created via `init_schema()` alongside existing tables.
 - **FR-003**: The system MUST provide a `Tracer` class that uses `contextvars` to maintain a per-coroutine span stack, supporting `span(event_type, inputs=None)` as a context manager.
 - **FR-004**: The tracer MUST auto-assign `trace_id` (inherited from parent span or generated fresh for root spans), `span_id` (unique), and `parent_span_id` (from the current stack top).
-- **FR-005**: The tracer MUST record `ts_start` on enter, `ts_end` + `duration_ms` on clean exit, and on exception MUST record `error` (type, message, traceback) and mark `ended=True`.
-- **FR-006**: The tracer MUST flush completed spans to the `trace_events` SQLite table immediately on exit (not buffered), using the existing `RuntimeStore` connection.
+- **FR-005**: The tracer MUST record `ts_start` on `__enter__` (in-memory only), and on `__exit__` (both success and exception paths) MUST write a single INSERT with `ts_start`, `ts_end`, `duration_ms`, and on exception MUST also record `error` (type, message, traceback) and mark `ended=True`. An `atexit` handler MUST flush any unfinished spans at process termination.
+- **FR-006**: The tracer MUST flush completed spans to the `trace_events` SQLite table immediately on `__exit__` using the existing `RuntimeStore` connection. If the INSERT fails, the tracer MUST catch the exception, log a `logging.warning`, and let the main operation proceed (tracing is not correctness-critical).
 - **FR-007**: The tracer MUST support a no-op mode (`NoOpTracer`) where the context manager yields instantly without recording anything.
-- **FR-008**: The hermes_flow package MUST use a module-level global tracer instance, defaulting to `NoOpTracer` in tests and `SqliteTracer` in production (determined by whether a `RuntimeStore` is active).
+- **FR-008**: The hermes_flow package MUST provide a module-level `set_tracer(tracer)` setter and a `get_tracer()` accessor. Default is `NoOpTracer`. `flow_init()` MUST call `set_tracer(SqliteTracer(store))` after successfully creating a run, and subsequent tool handlers use the active tracer. Tests MUST reset via `set_tracer(NoOpTracer())`.
 - **FR-009**: Each production code path (`flow_init`, `load_flow_from_yaml`, `validate_flow`, `create_run`, `build_context_packet`, `validate_artifact_write`, `route_message`, `evaluate_gate`, `record_decision`, `record_message_attempt`, `advance_state`, `flow_send`, `flow_decide`, `flow_step`, `worker_dispatch`, idle timeout checks, loop budget checks) MUST wrap its body in a `tracer.span(event_type=...)` context manager.
 - **FR-010**: The tracer MUST truncate any `inputs`, `outputs`, `decisions`, or `error.traceback` field exceeding 100KB, recording `truncated=True` on the span.
 - **FR-011**: The tracer MUST provide a query helper `get_trace(run_id, trace_id)` that returns all spans for a trace_id in chronological order, and `get_traces_by_event(run_id, event_type)` that returns all spans of a given event_type.
