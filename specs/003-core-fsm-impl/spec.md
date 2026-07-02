@@ -10,6 +10,13 @@
 
 **Reference**: Feature 001 (`001-hermes-flow-fsm`) defines the full FSM design — this feature fills the remaining implementation gaps. The data model, contracts, and user stories from 001 already define the semantics; this spec focuses on non-duplicating completion criteria.
 
+## Clarifications
+
+### Session 2026-07-02
+
+- Q: How does the round counter work — when is it incremented and how are decisions grouped into rounds? → A: Option A — round counter increments only when evaluate_gate returns unsatisfied (on_fail / on_blocked). Decisions for the current round are filtered by querying the transitions table for the last time the state was entered, then loading decisions created after that timestamp. on_pass does not increment the counter (state has already advanced).
+- Q: What does flow_step do on a state without a gate — auto-advance or stop? → A: Option B — flow_step returns the current status without advancing. The caller decides whether to call flow_step again. This preserves step-driven semantics and avoids unexpected recursive state advances.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - FSM engine evaluates gates and transitions states correctly (Priority: P1)
@@ -99,11 +106,11 @@ As a Hermes user, I want the complete set of `flow_*` tool handlers to work end-
 - **FR-001**: The engine MUST provide `evaluate_gate(run_id, state_id)` that inspects all decisions recorded for the current round group, compares them against the gate's `required_roles`, and returns a result with fields: `satisfied` (bool), `next_state_id` (str), `outstanding_roles` (list[str]), `round` (int), `reason` (str).
 - **FR-002**: The engine MUST detect when all required roles have submitted a decision whose value matches one of the gate's `pass_values`. When satisfied, set `satisfied=True` and return `next_state_id` from `on_pass`.
 - **FR-003**: The engine MUST detect when any required role's decision value matches one of the gate's `fail_values` or `blocked_values`. When unsatisfied, set `satisfied=False`, return `next_state_id` from `on_fail` or `on_blocked` respectively, and include the decision details in `reason`.
-- **FR-004**: The engine MUST maintain a per-state round counter, incremented each time the gate is evaluated. If `round >= max_rounds` and the gate is still unsatisfied, the engine MUST set `satisfied=False` and return `next_state_id` from `on_exhausted`.
+- **FR-004**: The engine MUST maintain a per-state round counter (in `run.round_counters`), incremented only when `evaluate_gate` returns unsatisfied (on_fail or on_blocked). If `round >= max_rounds` and the gate is still unsatisfied, the engine MUST set `satisfied=False` and return `next_state_id` from `on_exhausted`. on_pass transitions do NOT increment the counter because the state has already advanced.
 - **FR-005**: The engine MUST provide `detect_idle_timeout(run_id, state_id)` that checks the elapsed time since the last recorded activity against `idle_timeout_seconds`. If exceeded, the engine MUST trigger the state's `on_exhausted` transition.
 - **FR-006**: The engine MUST provide `advance_state(run_id, from_state_id, to_state_id, reason)` that persists the state transition, resets the round counter for the new state, appends an audit event, and updates `run.current_state_id`.
 - **FR-007**: The engine MUST reject `evaluate_gate` or `advance_state` calls for runs whose status is not `active`.
-- **FR-008**: The engine MUST reject `evaluate_gate` for a state that has no gate defined — instead, immediately transition via the first matching transition condition or escalate if none match.
+- **FR-008**: The engine MUST reject `evaluate_gate` for a state that has no gate defined. `flow_step` MUST NOT auto-advance through gapless states — it returns the current status and the caller decides whether to call `flow_step` again (step-driven semantics, per Clarify Q2).
 
 **Router (routing.py)**:
 
