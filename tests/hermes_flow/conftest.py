@@ -13,6 +13,15 @@ from hermes_flow.schemas import (
     AgentBinding,
     MemoryMode,
 )
+from hermes_flow.trace import NoOpTracer, set_tracer
+
+
+# Auto-reset tracer before every test
+@pytest.fixture(autouse=True)
+def _reset_tracer() -> Generator:
+    """Reset the module-level tracer to NoOpTracer before each test."""
+    set_tracer(NoOpTracer())
+    yield
 
 
 @pytest.fixture

@@ -222,13 +222,23 @@ class NoOpTracer(Tracer):
 
 
 class _NoOpSpanContext:
-    """Context manager that yields instantly without recording."""
+    """Context manager that yields a mutable dummy for attribute assignment."""
 
-    def __enter__(self) -> None:
-        return None
+    def __init__(self):
+        self._dummy = _NoOpSpan()
+
+    def __enter__(self):
+        return self._dummy
 
     def __exit__(self, *args: Any) -> None:
         pass
+
+
+class _NoOpSpan:
+    """Dummy span object that silently accepts attribute writes."""
+    def __init__(self):
+        self.outputs = {}
+        self.decisions = {}
 
 
 # ── SqliteTracer ────────────────────────────────────────────────────────────

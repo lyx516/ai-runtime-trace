@@ -25,6 +25,7 @@ from hermes_flow.schemas import (
     _now,
     to_dict,
 )
+from hermes_flow.trace import get_tracer
 
 
 # ── SQLite schema DDL ───────────────────────────────────────────────────────
@@ -237,64 +238,74 @@ class RuntimeStore:
         memory_modes: dict[str, str],
         artifact_root: str,
         states_json: dict[str, Any],
+        override_run_id: str | None = None,
     ) -> FlowRun:
         """Initialize a new run directory and SQLite database."""
-        self.run_dir.mkdir(parents=True, exist_ok=True)
-        self.init_schema()
+        tracer = get_tracer()
+        with tracer.span("create_run", inputs={
+            "flow_id": flow_id,
+            "flow_version": flow_version,
+            "initial_state_id": initial_state_id,
+            "agent_count": len(agent_bindings),
+        }) as span:
+            self.run_dir.mkdir(parents=True, exist_ok=True)
+            self.init_schema()
 
-        run_id = uuid.uuid4().hex[:12]
-        now = _now()
+            run_id = override_run_id or uuid.uuid4().hex[:12]
+            now = _now()
 
-        run = FlowRun(
-            run_id=run_id,
-            flow_id=flow_id,
-            flow_version=flow_version,
-            status=RunStatus.ACTIVE,
-            current_state_id=initial_state_id,
-            round_counters={},
-            created_at=now,
-            updated_at=now,
-            agent_bindings=agent_bindings,
-            memory_modes=memory_modes,
-            artifact_root=artifact_root,
-        )
-
-        conn = self.connect()
-        conn.execute(
-            """INSERT INTO runs (run_id, flow_id, flow_version, status, current_state_id,
-               round_counters, created_at, updated_at, agent_bindings, memory_modes, artifact_root)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (run.run_id, run.flow_id, run.flow_version, run.status.value,
-             run.current_state_id, json_dumps(run.round_counters),
-             run.created_at, run.updated_at, json_dumps([to_dict(b) for b in run.agent_bindings]),
-             json_dumps(run.memory_modes), run.artifact_root),
-        )
-
-        # Persist states
-        for state_id, state_data in states_json.items():
-            conn.execute(
-                "INSERT INTO states (run_id, state_id, state_json) VALUES (?, ?, ?)",
-                (run_id, state_id, json_dumps(state_data)),
+            run = FlowRun(
+                run_id=run_id,
+                flow_id=flow_id,
+                flow_version=flow_version,
+                status=RunStatus.ACTIVE,
+                current_state_id=initial_state_id,
+                round_counters={},
+                created_at=now,
+                updated_at=now,
+                agent_bindings=agent_bindings,
+                memory_modes=memory_modes,
+                artifact_root=artifact_root,
             )
 
-        # Persist agent bindings
-        for b in agent_bindings:
+            conn = self.connect()
             conn.execute(
-                "INSERT INTO agents (run_id, role_id, profile_name, session_id, memory_mode) VALUES (?, ?, ?, ?, ?)",
-                (run_id, b.role_id, b.profile_name, b.session_id, b.memory_mode.value),
+                """INSERT INTO runs (run_id, flow_id, flow_version, status, current_state_id,
+                   round_counters, created_at, updated_at, agent_bindings, memory_modes, artifact_root)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (run.run_id, run.flow_id, run.flow_version, run.status.value,
+                 run.current_state_id, json_dumps(run.round_counters),
+                 run.created_at, run.updated_at, json_dumps([to_dict(b) for b in run.agent_bindings]),
+                 json_dumps(run.memory_modes), run.artifact_root),
             )
 
-        # Initial audit event
-        self.append_audit_event(
-            run_id=run_id,
-            event_type="run_created",
-            state_id=initial_state_id,
-            actor="system",
-            payload={"flow_id": flow_id, "flow_version": flow_version},
-        )
+            # Persist states
+            for state_id, state_data in states_json.items():
+                conn.execute(
+                    "INSERT INTO states (run_id, state_id, state_json) VALUES (?, ?, ?)",
+                    (run_id, state_id, json_dumps(state_data)),
+                )
 
-        conn.commit()
-        return run
+            # Persist agent bindings
+            for b in agent_bindings:
+                conn.execute(
+                    "INSERT INTO agents (run_id, role_id, profile_name, session_id, memory_mode) VALUES (?, ?, ?, ?, ?)",
+                    (run_id, b.role_id, b.profile_name, b.session_id, b.memory_mode.value),
+                )
+
+            # Initial audit event
+            self.append_audit_event(
+                run_id=run_id,
+                event_type="run_created",
+                state_id=initial_state_id,
+                actor="system",
+                payload={"flow_id": flow_id, "flow_version": flow_version},
+            )
+
+            conn.commit()
+
+            span.outputs = {"run_id": run.run_id, "status": run.status.value}
+            return run
 
     # ── Load status ───────────────────────────────────────────────────────
 
@@ -343,23 +354,30 @@ class RuntimeStore:
     # ── Record message ────────────────────────────────────────────────────
 
     def record_message_attempt(self, envelope: MessageEnvelope) -> None:
-        conn = self.connect()
-        conn.execute(
-            """INSERT INTO messages (message_id, run_id, state_id, from_role,
-               intended_recipients, authorized_recipients, recipient_availability,
-               visibility, kind, content, artifacts, requires_ack,
-               delivery_outcome, rejection_reason, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (envelope.message_id, envelope.run_id, envelope.state_id, envelope.from_role,
-             json_dumps(envelope.intended_recipients),
-             json_dumps(envelope.authorized_recipients),
-             json_dumps(envelope.recipient_availability),
-             envelope.visibility, envelope.kind, envelope.content,
-             json_dumps(envelope.artifacts), int(envelope.requires_ack),
-             envelope.delivery_outcome.value, envelope.rejection_reason,
-             envelope.created_at),
-        )
-        conn.commit()
+        tracer = get_tracer()
+        with tracer.span("record_message", inputs={
+            "message_id": envelope.message_id,
+            "from_role": envelope.from_role,
+            "intended_recipients": envelope.intended_recipients,
+        }) as span:
+            conn = self.connect()
+            conn.execute(
+                """INSERT INTO messages (message_id, run_id, state_id, from_role,
+                   intended_recipients, authorized_recipients, recipient_availability,
+                   visibility, kind, content, artifacts, requires_ack,
+                   delivery_outcome, rejection_reason, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (envelope.message_id, envelope.run_id, envelope.state_id, envelope.from_role,
+                 json_dumps(envelope.intended_recipients),
+                 json_dumps(envelope.authorized_recipients),
+                 json_dumps(envelope.recipient_availability),
+                 envelope.visibility, envelope.kind, envelope.content,
+                 json_dumps(envelope.artifacts), int(envelope.requires_ack),
+                 envelope.delivery_outcome.value, envelope.rejection_reason,
+                 envelope.created_at),
+            )
+            conn.commit()
+            span.outputs = {"delivery_outcome": envelope.delivery_outcome.value}
 
     # ── Add inbox entries ─────────────────────────────────────────────────
 
@@ -376,15 +394,22 @@ class RuntimeStore:
     # ── Record decision ───────────────────────────────────────────────────
 
     def record_decision(self, decision: Decision) -> None:
-        conn = self.connect()
-        conn.execute(
-            """INSERT INTO decisions (decision_id, run_id, state_id, role_id, value, reason, artifacts, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (decision.decision_id, decision.run_id, decision.state_id,
-             decision.role_id, decision.value, decision.reason,
-             json_dumps(decision.artifacts), decision.created_at),
-        )
-        conn.commit()
+        tracer = get_tracer()
+        with tracer.span("record_decision", inputs={
+            "role_id": decision.role_id,
+            "value": decision.value,
+            "state_id": decision.state_id,
+        }) as span:
+            conn = self.connect()
+            conn.execute(
+                """INSERT INTO decisions (decision_id, run_id, state_id, role_id, value, reason, artifacts, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (decision.decision_id, decision.run_id, decision.state_id,
+                 decision.role_id, decision.value, decision.reason,
+                 json_dumps(decision.artifacts), decision.created_at),
+            )
+            conn.commit()
+            span.outputs = {"decision_id": decision.decision_id}
 
     # ── Record artifact ───────────────────────────────────────────────────
 

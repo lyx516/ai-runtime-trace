@@ -15,6 +15,7 @@ from hermes_flow.schemas import (
     State,
     Transition,
 )
+from hermes_flow.trace import get_tracer
 
 
 def load_flow_from_yaml(path: str | Path) -> FlowDefinition:
@@ -24,106 +25,116 @@ def load_flow_from_yaml(path: str | Path) -> FlowDefinition:
     """
     import yaml
 
-    path = Path(path)
-    if not path.exists():
-        raise FlowValidationError(f"Flow file not found: {path}")
+    tracer = get_tracer()
+    with tracer.span("load_flow", inputs={"path": str(path)}) as span:
+        path = Path(path)
+        if not path.exists():
+            raise FlowValidationError(f"Flow file not found: {path}")
 
-    with open(path) as f:
-        raw: dict[str, Any] = yaml.safe_load(f)
+        with open(path) as f:
+            raw: dict[str, Any] = yaml.safe_load(f)
 
-    if not isinstance(raw, dict):
-        raise FlowValidationError("Flow definition must be a YAML mapping")
+        if not isinstance(raw, dict):
+            raise FlowValidationError("Flow definition must be a YAML mapping")
 
-    # Reject unknown top-level fields
-    known_fields = {
-        "flow_id", "name", "version", "initial_state_id", "terminal_state_ids",
-        "agents", "states", "routing_policies", "loop_defaults",
-    }
-    unknown = set(raw) - known_fields
-    if unknown:
-        raise FlowValidationError(f"Unknown top-level fields: {', '.join(sorted(unknown))}")
+        # Reject unknown top-level fields
+        known_fields = {
+            "flow_id", "name", "version", "initial_state_id", "terminal_state_ids",
+            "agents", "states", "routing_policies", "loop_defaults",
+        }
+        unknown = set(raw) - known_fields
+        if unknown:
+            raise FlowValidationError(f"Unknown top-level fields: {', '.join(sorted(unknown))}")
 
-    # Parse agents
-    agents: dict[str, AgentRole] = {}
-    for agent_id, agent_raw in raw.get("agents", {}).items():
-        memory_raw = agent_raw.get("memory_mode", "run_isolated")
-        try:
-            memory_mode = MemoryMode(memory_raw)
-        except ValueError:
-            memory_mode = MemoryMode.RUN_ISOLATED
-        agents[agent_id] = AgentRole(
-            role_id=agent_id,
-            display_name=agent_raw.get("display_name", agent_id),
-            soul=agent_raw.get("soul", ""),
-            profile_name=agent_raw.get("profile_name", ""),
-            skills=agent_raw.get("skills", []),
-            toolsets=agent_raw.get("toolsets", []),
-            read_scope=agent_raw.get("read_scope", []),
-            write_scope=agent_raw.get("write_scope", []),
-            workspace_mode=agent_raw.get("workspace_mode", "isolated"),
-            memory_mode=memory_mode,
-            max_action_seconds=agent_raw.get("max_action_seconds"),
-        )
-
-    # Parse states
-    states: dict[str, State] = {}
-    for state_id, state_raw in raw.get("states", {}).items():
-        gate_raw = state_raw.get("gate")
-        gate = None
-        if gate_raw:
+        # Parse agents
+        agents: dict[str, AgentRole] = {}
+        for agent_id, agent_raw in raw.get("agents", {}).items():
+            memory_raw = agent_raw.get("memory_mode", "run_isolated")
             try:
-                gate_type = GateType(gate_raw.get("type", "decision"))
+                memory_mode = MemoryMode(memory_raw)
             except ValueError:
-                gate_type = GateType.DECISION
-            gate = Gate(
-                gate_id=gate_raw.get("gate_id", f"{state_id}_gate"),
-                type=gate_type,
-                required_roles=gate_raw.get("required_roles", []),
-                pass_values=gate_raw.get("pass_values", ["APPROVE", "PASS"]),
-                fail_values=gate_raw.get("fail_values", ["REQUEST_CHANGES", "FAIL"]),
-                blocked_values=gate_raw.get("blocked_values", ["BLOCKED"]),
-                on_pass=gate_raw.get("on_pass", ""),
-                on_fail=gate_raw.get("on_fail", ""),
-                on_blocked=gate_raw.get("on_blocked", ""),
-                on_exhausted=gate_raw.get("on_exhausted", ""),
-                max_rounds=gate_raw.get("max_rounds", 0),
+                memory_mode = MemoryMode.RUN_ISOLATED
+            agents[agent_id] = AgentRole(
+                role_id=agent_id,
+                display_name=agent_raw.get("display_name", agent_id),
+                soul=agent_raw.get("soul", ""),
+                profile_name=agent_raw.get("profile_name", ""),
+                skills=agent_raw.get("skills", []),
+                toolsets=agent_raw.get("toolsets", []),
+                read_scope=agent_raw.get("read_scope", []),
+                write_scope=agent_raw.get("write_scope", []),
+                workspace_mode=agent_raw.get("workspace_mode", "isolated"),
+                memory_mode=memory_mode,
+                max_action_seconds=agent_raw.get("max_action_seconds"),
             )
 
-        transitions_raw = state_raw.get("transitions", {})
-        transitions = [
-            Transition(target_state_id=target, condition=condition)
-            for condition, target in transitions_raw.items()
-        ]
+        # Parse states
+        states: dict[str, State] = {}
+        for state_id, state_raw in raw.get("states", {}).items():
+            gate_raw = state_raw.get("gate")
+            gate = None
+            if gate_raw:
+                try:
+                    gate_type = GateType(gate_raw.get("type", "decision"))
+                except ValueError:
+                    gate_type = GateType.DECISION
+                gate = Gate(
+                    gate_id=gate_raw.get("gate_id", f"{state_id}_gate"),
+                    type=gate_type,
+                    required_roles=gate_raw.get("required_roles", []),
+                    pass_values=gate_raw.get("pass_values", ["APPROVE", "PASS"]),
+                    fail_values=gate_raw.get("fail_values", ["REQUEST_CHANGES", "FAIL"]),
+                    blocked_values=gate_raw.get("blocked_values", ["BLOCKED"]),
+                    on_pass=gate_raw.get("on_pass", ""),
+                    on_fail=gate_raw.get("on_fail", ""),
+                    on_blocked=gate_raw.get("on_blocked", ""),
+                    on_exhausted=gate_raw.get("on_exhausted", ""),
+                    max_rounds=gate_raw.get("max_rounds", 0),
+                )
 
-        states[state_id] = State(
-            state_id=state_id,
-            description=state_raw.get("description", ""),
-            actors=state_raw.get("actors", []),
-            input_artifacts=state_raw.get("input_artifacts", []),
-            output_artifacts=state_raw.get("output_artifacts", []),
-            message_acceptance=state_raw.get("message_acceptance", True),
-            gate=gate,
-            transitions=transitions,
-            max_rounds=state_raw.get("max_rounds", 0),
-            on_exhausted=state_raw.get("on_exhausted", ""),
-            idle_timeout_seconds=state_raw.get("idle_timeout_seconds"),
-            terminal=state_raw.get("terminal", False),
-            human=state_raw.get("human", False),
+            transitions_raw = state_raw.get("transitions", {})
+            transitions = [
+                Transition(target_state_id=target, condition=condition)
+                for condition, target in transitions_raw.items()
+            ]
+
+            states[state_id] = State(
+                state_id=state_id,
+                description=state_raw.get("description", ""),
+                actors=state_raw.get("actors", []),
+                input_artifacts=state_raw.get("input_artifacts", []),
+                output_artifacts=state_raw.get("output_artifacts", []),
+                message_acceptance=state_raw.get("message_acceptance", True),
+                gate=gate,
+                transitions=transitions,
+                max_rounds=state_raw.get("max_rounds", 0),
+                on_exhausted=state_raw.get("on_exhausted", ""),
+                idle_timeout_seconds=state_raw.get("idle_timeout_seconds"),
+                terminal=state_raw.get("terminal", False),
+                human=state_raw.get("human", False),
+            )
+
+        loop_defaults = raw.get("loop_defaults", {})
+
+        flow = FlowDefinition(
+            flow_id=raw.get("flow_id", path.stem),
+            name=raw.get("name", path.stem),
+            version=str(raw.get("version", "1")),
+            agents=agents,
+            states=states,
+            initial_state_id=raw.get("initial_state_id", ""),
+            terminal_state_ids=raw.get("terminal_state_ids", []),
+            routing_policies=raw.get("routing_policies", {}),
+            loop_defaults=loop_defaults,
         )
 
-    loop_defaults = raw.get("loop_defaults", {})
-
-    return FlowDefinition(
-        flow_id=raw.get("flow_id", path.stem),
-        name=raw.get("name", path.stem),
-        version=str(raw.get("version", "1")),
-        agents=agents,
-        states=states,
-        initial_state_id=raw.get("initial_state_id", ""),
-        terminal_state_ids=raw.get("terminal_state_ids", []),
-        routing_policies=raw.get("routing_policies", {}),
-        loop_defaults=loop_defaults,
-    )
+        span.outputs = {
+            "flow_id": flow.flow_id,
+            "agent_count": len(flow.agents),
+            "state_count": len(flow.states),
+        }
+        span.decisions = {}
+        return flow
 
 
 def validate_flow(flow: FlowDefinition) -> None:
@@ -138,54 +149,59 @@ def validate_flow(flow: FlowDefinition) -> None:
     - every gate loop has max_rounds or on_exhausted
     - states with idle_timeout_seconds must have on_exhausted
     """
-    errors: list[str] = []
+    tracer = get_tracer()
+    with tracer.span("validate_flow", inputs={"flow_id": flow.flow_id, "agent_count": len(flow.agents)}) as span:
+        errors: list[str] = []
 
-    # 1. initial_state_id exists
-    if flow.initial_state_id not in flow.states:
-        errors.append(f"initial_state_id '{flow.initial_state_id}' does not exist in states")
+        # 1. initial_state_id exists
+        if flow.initial_state_id not in flow.states:
+            errors.append(f"initial_state_id '{flow.initial_state_id}' does not exist in states")
 
-    # 2. at least one terminal state
-    actual_terminal = [sid for sid, s in flow.states.items() if s.terminal]
-    if not actual_terminal:
-        errors.append("No terminal state defined")
+        # 2. at least one terminal state
+        actual_terminal = [sid for sid, s in flow.states.items() if s.terminal]
+        if not actual_terminal:
+            errors.append("No terminal state defined")
 
-    # 3. every transition target exists
-    for sid, state in flow.states.items():
-        for t in state.transitions:
-            if t.target_state_id not in flow.states:
-                errors.append(f"State '{sid}' has transition to non-existent state '{t.target_state_id}'")
+        # 3. every transition target exists
+        for sid, state in flow.states.items():
+            for t in state.transitions:
+                if t.target_state_id not in flow.states:
+                    errors.append(f"State '{sid}' has transition to non-existent state '{t.target_state_id}'")
 
-    # 4. every actor references an existing agent role
-    for sid, state in flow.states.items():
-        for actor in state.actors:
-            if actor not in flow.agents:
-                errors.append(f"State '{sid}' references agent role '{actor}' which is not defined in agents")
+        # 4. every actor references an existing agent role
+        for sid, state in flow.states.items():
+            for actor in state.actors:
+                if actor not in flow.agents:
+                    errors.append(f"State '{sid}' references agent role '{actor}' which is not defined in agents")
 
-    # 5. unreachable states (BFS from initial_state_id)
-    if flow.initial_state_id in flow.states:
-        reachable = _reachable_states(flow)
-        for sid in flow.states:
-            if sid not in reachable and not flow.states[sid].terminal:
-                errors.append(f"State '{sid}' is unreachable from initial state '{flow.initial_state_id}'")
+        # 5. unreachable states (BFS from initial_state_id)
+        if flow.initial_state_id in flow.states:
+            reachable = _reachable_states(flow)
+            for sid in flow.states:
+                if sid not in reachable and not flow.states[sid].terminal:
+                    errors.append(f"State '{sid}' is unreachable from initial state '{flow.initial_state_id}'")
 
-    # 6. gate loop without max_rounds or on_exhausted
-    for sid, state in flow.states.items():
-        if state.gate:
-            if state.gate.max_rounds == 0 and not state.gate.on_exhausted:
-                if state.gate.on_fail or state.gate.on_blocked:
-                    errors.append(f"State '{sid}' has a revision/blocked path but gate has no max_rounds and no on_exhausted — risk of unbounded loop")
+        # 6. gate loop without max_rounds or on_exhausted
+        for sid, state in flow.states.items():
+            if state.gate:
+                if state.gate.max_rounds == 0 and not state.gate.on_exhausted:
+                    if state.gate.on_fail or state.gate.on_blocked:
+                        errors.append(f"State '{sid}' has a revision/blocked path but gate has no max_rounds and no on_exhausted — risk of unbounded loop")
 
-    # 7. idle_timeout_seconds without on_exhausted
-    for sid, state in flow.states.items():
-        if state.idle_timeout_seconds is not None and state.idle_timeout_seconds > 0:
-            if not state.on_exhausted:
-                errors.append(f"State '{sid}' has idle_timeout_seconds={state.idle_timeout_seconds} but no on_exhausted path")
+        # 7. idle_timeout_seconds without on_exhausted
+        for sid, state in flow.states.items():
+            if state.idle_timeout_seconds is not None and state.idle_timeout_seconds > 0:
+                if not state.on_exhausted:
+                    errors.append(f"State '{sid}' has idle_timeout_seconds={state.idle_timeout_seconds} but no on_exhausted path")
 
-    if errors:
-        raise FlowValidationError(
-            f"Flow validation failed: {len(errors)} issue(s)",
-            details=errors,
-        )
+        span.outputs = {"valid": len(errors) == 0, "error_count": len(errors)}
+        span.decisions = {} if not errors else {"validation_errors": errors}
+
+        if errors:
+            raise FlowValidationError(
+                f"Flow validation failed: {len(errors)} issue(s)",
+                details=errors,
+            )
 
 
 def _reachable_states(flow: FlowDefinition) -> set[str]:

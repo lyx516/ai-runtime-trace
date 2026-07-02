@@ -17,6 +17,7 @@ from hermes_flow.schemas import (
     to_dict,
 )
 from hermes_flow.storage import RuntimeStore
+from hermes_flow.trace import SqliteTracer, set_tracer
 
 
 # ── JSON response helpers ───────────────────────────────────────────────────
@@ -43,6 +44,7 @@ def flow_init(
 
     Supports dry_run=True for validation without creating runtime state.
     """
+    import uuid
     project_root_p = Path(project_root)
     flow_path_p = Path(flow_path)
 
@@ -50,6 +52,15 @@ def flow_init(
     if not flow_path_p.is_absolute():
         flow_path_p = project_root_p / flow_path_p
 
+    # Create tracing store first so ALL operations are captured
+    _trace_run_id = uuid.uuid4().hex[:12]
+    _trace_run_dir = project_root_p / ".hermes-flow" / "runs" / _trace_run_id
+    _trace_run_dir.mkdir(parents=True, exist_ok=True)
+    _trace_store = RuntimeStore(_trace_run_dir)
+    _trace_store.init_schema()
+    set_tracer(SqliteTracer(_trace_store, run_id=_trace_run_id))
+
+    # Load and validate
     try:
         flow = load_flow_from_yaml(str(flow_path_p))
     except Exception as e:
@@ -70,6 +81,12 @@ def flow_init(
             "validation_errors": [],
         })
 
+    # Use the tracing store for the real run
+    run_dir = _trace_run_dir
+    run_id = _trace_run_id
+    artifact_root = str(run_dir / "artifacts")
+    store = _trace_store
+
     # Build agent bindings
     bindings = [
         AgentBinding(
@@ -87,35 +104,25 @@ def flow_init(
     for sid, state in flow.states.items():
         states_json[sid] = to_dict(state)
 
-    # Init runtime
-    artifact_root = str(project_root_p / ".hermes-flow" / "runs" / "{{run_id}}" / "artifacts")
-    run_dir = project_root_p / ".hermes-flow" / "runs"
-
-    store = RuntimeStore(run_dir / "tmp")  # will be renamed after create_run
-    # Use a fixed run_id pattern — we need to create the dir
-    import uuid
-    run_id = uuid.uuid4().hex[:12]
-    run_dir_final = run_dir / run_id
-    artifact_root_final = str(run_dir_final / "artifacts")
-
-    store = RuntimeStore(run_dir_final)
     run = store.create_run(
         flow_id=flow.flow_id,
         flow_version=flow.version,
         initial_state_id=flow.initial_state_id,
         agent_bindings=bindings,
         memory_modes=memory_modes,
-        artifact_root=artifact_root_final,
+        artifact_root=artifact_root,
         states_json=states_json,
+        override_run_id=run_id,  # use the directory name as run_id
     )
 
-    return ok_result({
+    result = ok_result({
         "run_id": run.run_id,
         "current_state_id": run.current_state_id,
         "agents": [to_dict(b) for b in bindings],
-        "artifact_root": artifact_root_final,
+        "artifact_root": artifact_root,
         "validation_errors": [],
     })
+    return result
 
 
 def flow_status(
