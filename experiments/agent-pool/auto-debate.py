@@ -298,11 +298,9 @@ def generate_yaml(goal: str, agent_ids: list[str], run_name: str, agents: dict) 
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  Phase 3: 驱动辩论
+#  Phase 3: Flow Engine Runtime
+#  NOT manager responsibility — pure Hermes Flow state machine driver.
 # ══════════════════════════════════════════════════════════════════════
-#  Phase 3: 驱动辩论
-# ══════════════════════════════════════════════════════════════════════
-
 
 def agent_prompt(role_id: str, soul: str, goal: str, state_id: str, round_n: int,
                  history: list, inbox: list, gate: dict, tools_list: str = "") -> tuple[str, str]:
@@ -375,8 +373,8 @@ def agent_prompt(role_id: str, soul: str, goal: str, state_id: str, round_n: int
     return system, user
 
 
-def run_debate(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, agents: dict):
-    """Run the full debate autonomously."""
+def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, agents: dict):
+    """Flow engine: drive Hermes Flow state machine until completion. Not manager's job."""
     sys.path.insert(0, PROJECT_ROOT)
     os.environ["HERMES_FLOW_PROJECT_ROOT"] = PROJECT_ROOT
 
@@ -660,16 +658,18 @@ def main():
         ref_count = len(list(has_refs.iterdir())) if has_refs.exists() and has_refs.is_dir() else 0
         print(f"  📁 {aid:20s} | {info.get('role',''):15s} | refs={ref_count}")
 
-    # Phase 1: Manager selects
+    # Phase 1: Manager selects agents + team skill
     agent_ids = manager_select_agents(goal, agents)
 
-    # Phase 2: Generate flow
+    # Phase 2: Manager generates flow YAML
     print("\n📄 生成 Flow YAML...")
     yaml_path = generate_yaml(goal, agent_ids, run_name, agents)
     print(f"   → {yaml_path}")
 
-    # Phase 3: Run
-    run_debate(goal, agent_ids, yaml_path, run_name, agents)
+    # Phase 3: Flow engine runs (NOT manager)
+    run_flow(goal, agent_ids, yaml_path, run_name, agents)
+
+    # Phase 4: Manager evaluates
 
 
 if __name__ == "__main__":
