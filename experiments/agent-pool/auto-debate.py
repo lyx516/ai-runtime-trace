@@ -295,23 +295,7 @@ def generate_yaml(goal: str, agent_ids: list[str], run_name: str, agents: dict,
 
 def agent_prompt(role_id: str, soul: str, goal: str, state_id: str, round_n: int,
                  history: list, inbox: list, gate: dict, tools_list: str = "") -> tuple[str, str]:
-    """Build system + user prompts for an agent."""
-    role_instructions = {
-        "designer": "你是激进的架构师，捍卫你的方案，引用数据和论文。可以在有说服力的反对下让步。",
-        "critic": "你是尖锐的批评者。质疑一切方案。对方让步时也要踩一脚。",
-        "mediator": "你是中立的技术总监。认可双方合理之处，提出折中方案。",
-        "decider": "你是最终决策者。引用所有参与者观点。",
-        "researcher": "你是严谨的研究员。引用具体数据和行业实践。",
-        "implementer": "你是务实的工程师。关注可实现性和工程成本。",
-        "reviewer": "你是严格审查者。检查边界情况和性能瓶颈。",
-        "analyst": "你是数据分析师。关注可量化指标和实验验证。",
-        "writer": "你是文档专家。关注表达清晰度和完整性。",
-        "spec-writer": "你基于需求编写结构化规格文档（spec）。包含边界条件、错误处理、验收标准。",
-        "plan-maker": "你基于 spec 制定技术方案。架构设计、接口定义、依赖分析、工时估算。",
-        "task-breaker": "你将技术方案拆解为可执行的任务清单。每个任务有前置依赖、产出和验收标准。",
-        "code-reviewer": "你对照 spec 审查代码实现。检查边界条件、安全漏洞、一致性和性能。",
-    }
-    instruction = role_instructions.get(role_id, "你是专业技术人员，基于数据和逻辑做判断。")
+    """Build system + user prompts for an agent, following Hermes prompt architecture."""
     pass_vals = gate.get("pass_values", ["APPROVE"])
     fail_vals = gate.get("fail_values", [])
     on_pass = gate.get("on_pass", "DONE")
@@ -322,29 +306,32 @@ def agent_prompt(role_id: str, soul: str, goal: str, state_id: str, round_n: int
     inbox_text = "\n".join([f"  从 {d['from_role']}: {d['content']}"
                           for d in inbox]) if inbox else "  (空)"
 
-    system = f"""{instruction}
+    # ── System prompt (Hermes architecture) ──────────────────────────────────
+    system = f"""## 你的身份
+你是 {role_id}，{soul[:400]}
 
-你的身份: {role_id}
-你的性格: {soul[:300]}
+## 工具使用规范（必须遵守）
+你必须使用工具来执行实际操作 —— 不能只描述你将要做什么而不真正去做。
+当你说要执行某个操作时（例如"我将写文件"、"让我查一下"、"我来实现"），
+你必须立即在同一轮调用对应的工具。不允许在承诺未来行动后结束本轮。
 
-响应格式（严格 JSON）:
-{{"value": "APPROVE|REQUEST_CHANGES|BLOCKED", "reason": "理由", "send_to": ["recipient"], "message": "消息（空则不发送）", "tool": "tool_id", "tool_args": {{"key": "value"}}}}
+持续工作直到任务真正完成。不要写完一个框架或一段计划就提交 APPROVE。
+如果你手头有可以完成任务的工具，直接使用它们，而不是描述你打算怎么做。
 
-- tool: 可选，你要调用的工具 ID（从以下可用工具中选择）
-- tool_args: 工具参数
+每一轮响应要么（a）包含推进工作的工具调用，要么（b）提交决策。
+只描述意图而不行动是不可接受的。
 
-|{tools_list}
+## 可用工具
+{tools_list}
 
-注意：最多调用 1 个工具。先调工具（写记忆/查资料），再提交决策。
+## 响应格式（严格 JSON）
+{{"value": "APPROVE|REQUEST_CHANGES|BLOCKED", "reason": "理由",
+  "send_to": ["recipient"], "message": "消息内容",
+  "tool": "工具ID", "tool_args": {{"参数名": "参数值"}}}}
 
-⚠️ **skill_create 使用指南**（仅在满足以下任一条件时使用）:
-- 你发现了一个**可复现的模式/技巧**（不止解决当前问题，下次还会用到）
-- 场景有**足够的复杂度**（不是"用requests发HTTP"这种单行常识）
-- 你刚对**某个经常写的模块/项目**完成了有价值的总结（架构决策、踩坑记录、配置模板）
-
-不满足以上条件时，用 memory_write 记录一次性信息即可，别滥用 skill_create。
-
-⚠️ **产物要求**：如果 gate 指定了 required_file，你必须用 file_write 写入，否则 gate 会退回。"""
+- value: 你的决策
+- tool/tool_args: 可选，先调工具干活，再提交决策
+- send_to/message: 可选，给其他 agent 发消息"""
 
     user = f"""## 辩论上下文
 **状态**: {state_id}（第{round_n}轮） **目标**: {goal}
