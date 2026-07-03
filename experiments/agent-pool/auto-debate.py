@@ -480,9 +480,10 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
         cur_round = round_counter[state_id]
         print(f"\n── [{state_id}] 第{cur_round}轮 — {required_roles}")
 
-        if cur_round > max_r and on_fail:
-            print(f"  ⏰ 超限({max_r}) → {on_fail}")
-            eng_advance(run_id, state_id, on_fail, f"round_exhausted({cur_round})", cur_round, store)
+        if cur_round > max_r:
+            exhausted = gate.get("on_exhausted", on_fail)
+            print(f"  ⏰ 超限({max_r}) → {exhausted}")
+            eng_advance(run_id, state_id, exhausted, f"round_exhausted({cur_round})", cur_round, store)
             continue
 
         for role_id in required_roles:
