@@ -24,5 +24,5 @@ skills/ 目录下的每个 .md 文件对应一个班底配置，包含：
 
 -----
 ## 团队搭配经验
-目标: 设计一套 kv cache 缓存系统，从零完整实现,使用 python，新建独立文件夹，要求极致性能 | 团队: spec-writer, plan-maker, task-breaker, implementer, code-reviewer, tester | 效果: 团队缺乏文档驱动协作，spec/plan/task 均未产出，导致实现和测试迭代低效。建议强制要求每个 agent 产出文件，并设置 gate 检查。
-Gate建议: 在 spec-writer、plan-maker、task-breaker 后增加 gate：必须产出对应文件且通过评审，才能进入下一阶段。implementer 和 tester 迭代时，每次提交必须附带变更文件路径。
+目标: 设计一套 kv cache 缓存系统，从零完整实现,使用 python，新建独立文件夹，要求极致性能 | 团队: designer, critic, decider, implementer, tester, writer | 效果: 当前 team 搭配（designer-critic-decider-implementer-tester-writer）因 designer 不产出设计、decider 不介入决策而完全失效。critic 孤掌难鸣，流程在评审阶段死锁。
+Gate建议: 建议在 [DESIGN] 阶段后增加 '设计交付物检查 gate'：若 designer 在指定轮次内未产出符合 critic 要求的设计文档，则自动触发 decider 介入，decider 需在 1 轮内做出裁决（强制要求 designer 产出或更换 designer）。同时增加 'decider 活跃度 gate'：若 decider 连续 2 轮无有效决策，则自动升级到 manager 处理。

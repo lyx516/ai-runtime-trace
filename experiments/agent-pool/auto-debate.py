@@ -463,6 +463,14 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
             allowed = "\\n".join([f"    {t}" for t in tool_info.get("allowed", [])])
             tools_list = f"## 可用工具\\n\\n### 通用工具（始终可用）:\\n{uni}\\n\\n### 专用工具（max {tool_info.get('max_non_universal', 5)}）:\\n{allowed}" if tool_info.get("allowed") else f"## 可用工具\\n{uni}"
 
+            # Append usage examples for key tools
+            usage_hints = "\\n\\n**工具参数说明**:\\n"
+            usage_hints += "  file_write: tool_args = {\"path\": \"文件名\", \"content\": \"文件内容\"}\\n"
+            usage_hints += "  file_read:  tool_args = {\"path\": \"文件名\"}\\n"
+            usage_hints += "  web_search: tool_args = {\"query\": \"搜索关键词\"}\\n"
+            usage_hints += "  memory_write: tool_args = {\"content\": \"记忆内容\", \"mode\": \"append|overwrite\"}\\n"
+            tools_list += usage_hints
+
             sys_p, usr_p = agent_prompt(role_id, soul, goal, state_id, cur_round,
                                          all_msgs, inbox_rows, gate, tools_list)
 

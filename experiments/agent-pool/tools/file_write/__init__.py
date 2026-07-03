@@ -1,7 +1,8 @@
 """文件写入工具"""
+import os
 from pathlib import Path
 
-PROJECT_ROOT = "/Users/liyuxuan/ai-runtime-trace"
+PROJECT_ROOT = os.environ.get("HERMES_FLOW_PROJECT_ROOT") or os.getcwd()
 
 def run(args: dict) -> dict:
     path = args.get("path", "")

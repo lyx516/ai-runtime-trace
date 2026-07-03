@@ -1,8 +1,9 @@
 """文件搜索工具 — 搜索文件名或内容"""
+import os
 import subprocess
 import shlex
 
-PROJECT_ROOT = "/Users/liyuxuan/ai-runtime-trace"
+PROJECT_ROOT = os.environ.get("HERMES_FLOW_PROJECT_ROOT") or os.getcwd()
 
 def run(args: dict) -> dict:
     pattern = args.get("pattern", "")
