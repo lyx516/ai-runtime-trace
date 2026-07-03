@@ -5,4 +5,4 @@
 
 -----
 ## 管理评审
-code-reviewer 未在记录中体现，但若已审查，需关注性能优化。亮点是质量把控，改进点：提前介入设计阶段。可保存 code-review checklist skill。
+✅ 交付物：未提供 review 文件。code-reviewer 应审查代码正确性、性能、风格，输出 review 报告。未履行审查职责。

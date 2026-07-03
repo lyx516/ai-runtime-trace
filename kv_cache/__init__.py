@@ -1,2 +1,4 @@
-# KV Cache - 高性能键值缓存系统
-# 支持LRU淘汰、TTL过期、分片并发、异步持久化
+from .cache import KVCache, CacheEntry, CacheStats
+from .segment import SegmentType
+
+__all__ = ['KVCache', 'CacheEntry', 'CacheStats', 'SegmentType']
