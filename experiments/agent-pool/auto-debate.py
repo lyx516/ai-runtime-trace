@@ -103,27 +103,40 @@ def call_llm(system: str, prompt: str, model: str = "deepseek-chat",
 
 def manager_select_agents(goal: str, agents: dict) -> list[str]:
     """Manager agent analyzes goal and selects appropriate agents."""
+    # Read manager's team skills
+    manager_skills_dir = Path(__file__).resolve().parent / "agents" / "manager" / "skills"
+    team_skills_text = ""
+    if manager_skills_dir.exists():
+        team_lines = []
+        for f in sorted(manager_skills_dir.iterdir()):
+            if f.suffix == ".md":
+                name = f.stem
+                content = f.read_text(encoding="utf-8")
+                descline = [l for l in content.split("\n") if l.strip() and not l.startswith("#")]
+                desc = descline[1] if len(descline) > 1 else name
+                members = [l.strip("- `") for l in content.split("\n") if "`" in l]
+                team_lines.append(f"  {name}: {desc} | 成员: {', '.join(members[:6])}")
+        if team_lines:
+            team_skills_text = "\n可用班底技能:\n" + "\n".join(team_lines)
+
     agent_list = "\n".join([
         f"  - {aid}: {info.get('display_name', aid)} | 角色: {info.get('role', '')} | "
-        f"技能: {info.get('skills', [])} | {info.get('description', '')}"
+        f"{info.get('description', '')}"
         for aid, info in agents.items() if aid != "manager"
     ])
 
-    system = """你是流程管理专家。根据用户目标从 Agent 池中选择 3-6 个。
+    system = f"""你是流程管理专家。根据用户目标从 Agent 池中选择 3-6 个。{team_skills_text}
 
 选择原则：
-- 需要调研 → researcher     - 需要设计 → designer
-- 需要批判 → critic         - 需要代码 → implementer
-- 需要审查 → reviewer       - 需要调停 → mediator
-- 需要决策 → decider        - 需要文档 → writer
-- 需要分析 → analyst        - 需要前端 → frontend_designer
-- 需要测试 → tester
-- 【特殊】涉及不可由 AI 判断的开放性技术问题 → human_clarifier
-
-human_clarifier 只在你认为讨论可能陷入僵局、最终需要人类拍板时才选。
+- 纯方案推演/辩论 → debate-team (designer + critic + mediator + decider)
+- 完整开发流水线 → spec-team (spec-writer + plan-maker + task-breaker + implementer + code-reviewer)
+- 调研分析 → research-team (researcher + analyst + writer)
+- 全栈（辩论→实现→文档） → fullstack-team
+- 简单修复 → quick-fix-team (implementer + tester)
+- 也可以混编多个班底
 
 响应格式（严格 JSON）：
-{"agents": ["id1","id2",...], "reason": "选择理由"}
+{{"agents": ["id1","id2",...], "reason": "选择理由", "team": "使用的班底名称"}}
 """
 
     user = f"## 任务\n{goal}\n\n## Agent 池\n{agent_list}\n\n请选择。"
@@ -229,6 +242,31 @@ def generate_yaml(goal: str, agent_ids: list[str], run_name: str, agents: dict) 
                 self_gate(decs, "DONE", "ABORT", 2))
             order.append("FINAL_DECISION")
 
+    # Speckit pipeline: SPEC → PLAN → TASKS → IMPLEMENT → REVIEW → DONE
+    speckit_writers = [a for a, r in roles.items() if r == "spec-writer"]
+    speckit_planners = [a for a, r in roles.items() if r == "plan-maker"]
+    speckit_breakers = [a for a, r in roles.items() if r == "task-breaker"]
+    speckit_implementers = [a for a, r in roles.items() if r in ("implementer",)]
+    speckit_reviewers = [a for a, r in roles.items() if r in ("code-reviewer", "reviewer")]
+
+    if speckit_writers:
+        next_s = "PLAN" if speckit_planners else ("TASKS" if speckit_breakers else "IMPLEMENT")
+        states["SPEC"] = make_state("SPEC", "编写规格文档", speckit_writers,
+            self_gate(speckit_writers, next_s))
+        order.append("SPEC")
+
+    if speckit_planners:
+        next_s = "TASKS" if speckit_breakers else "IMPLEMENT"
+        states["PLAN"] = make_state("PLAN", "制定技术方案", speckit_planners,
+            self_gate(speckit_planners, next_s))
+        order.append("PLAN")
+
+    if speckit_breakers:
+        next_s = "IMPLEMENT" if speckit_implementers else "DONE"
+        states["TASKS"] = make_state("TASKS", "分解任务", speckit_breakers,
+            self_gate(speckit_breakers, next_s))
+        order.append("TASKS")
+
     # Non-debate flow: DESIGN → IMPLEMENT → REVIEW → DONE
     if not (has_critic and critics):
         implementers = [a for a, r in roles.items() if r in ("implementer", "tester")]
@@ -279,6 +317,10 @@ def agent_prompt(role_id: str, soul: str, goal: str, state_id: str, round_n: int
         "reviewer": "你是严格审查者。检查边界情况和性能瓶颈。",
         "analyst": "你是数据分析师。关注可量化指标和实验验证。",
         "writer": "你是文档专家。关注表达清晰度和完整性。",
+        "spec-writer": "你基于需求编写结构化规格文档（spec）。包含边界条件、错误处理、验收标准。",
+        "plan-maker": "你基于 spec 制定技术方案。架构设计、接口定义、依赖分析、工时估算。",
+        "task-breaker": "你将技术方案拆解为可执行的任务清单。每个任务有前置依赖、产出和验收标准。",
+        "code-reviewer": "你对照 spec 审查代码实现。检查边界条件、安全漏洞、一致性和性能。",
     }
     instruction = role_instructions.get(role_id, "你是专业技术人员，基于数据和逻辑做判断。")
     pass_vals = gate.get("pass_values", ["APPROVE"])
