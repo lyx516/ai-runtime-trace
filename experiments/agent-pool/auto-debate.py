@@ -466,10 +466,16 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
             sys_p, usr_p = agent_prompt(role_id, soul, goal, state_id, cur_round,
                                          all_msgs, inbox_rows, gate, tools_list)
 
+            # Inject mandatory output instruction for product-gate states
+            output_artifacts = state_dict.get("output_artifacts", [])
+            if output_artifacts:
+                arts_str = ", ".join(output_artifacts)
+                usr_p += f"\n\n⚠️ **硬性要求：你必须用 file_write 写入 {arts_str}，才能提交 APPROVE**\n先呼叫 file_write 工具写入 {arts_str}，内容可以正式开始创作。写完后 gate 会验证文件存在。\n如果直接 APPROVE 不写文件，gate 会退回重做，直到 3 次后终止。"
+
             print(f"  🤖 {role_id}...", end="", flush=True)
             t0 = time.time()
             try:
-                resp = call_llm(sys_p, usr_p, temperature=0.8, max_tokens=600)
+                resp = call_llm(sys_p, usr_p, temperature=0.8, max_tokens=2000)
                 dt = time.time() - t0
                 val = resp.get("value", "APPROVE").upper()
                 print(f" {dt:.1f}s → {val}")
