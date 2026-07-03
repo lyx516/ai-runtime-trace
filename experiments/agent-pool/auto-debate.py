@@ -217,17 +217,13 @@ def make_state(sid, desc, actors, gate=None, output_artifacts=None):
     return s
 
 
-def generate_yaml(goal: str, agent_ids: list[str], run_name: str, agents: dict) -> Path:
-    """Generate flow YAML with debate + optional CLARIFY state."""
+def generate_yaml(goal: str, agent_ids: list[str], run_name: str, agents: dict,
+                  flow_topology: list[dict] | None = None) -> Path:
+    """Generate flow YAML from a topology config. No role-specific hardcoding."""
     selected = {aid: agents[aid] for aid in agent_ids}
     import yaml as yaml_lib
 
     flow_id = f"auto-{uuid.uuid4().hex[:8]}"
-    roles = {aid: info.get("role", "") for aid, info in selected.items()}
-    has_critic = "critic" in roles.values()
-    has_mediator = "mediator" in roles.values()
-    has_decider = "decider" in roles.values()
-    has_clarifier = "human_clarifier" in agent_ids
 
     yaml_data = {
         "flow_id": flow_id, "name": run_name, "version": 1,
@@ -243,94 +239,36 @@ def generate_yaml(goal: str, agent_ids: list[str], run_name: str, agents: dict) 
         }
 
     states, order = {}, []
-    designers = [a for a, r in roles.items() if r == "designer"]
-    critics = [a for a, r in roles.items() if r == "critic"]
-    speckit_writers = [a for a, r in roles.items() if r == "spec-writer"]
-    speckit_planners = [a for a, r in roles.items() if r == "plan-maker"]
-    speckit_breakers = [a for a, r in roles.items() if r == "task-breaker"]
-    speckit_implementers = [a for a, r in roles.items() if r in ("implementer",)]
-    speckit_reviewers = [a for a, r in roles.items() if r in ("code-reviewer", "reviewer")]
 
-    # DESIGN
-    if designers:
-        sid = "DESIGN"
-        # Determine next state: debate chain, speckit chain, or DONE
-        if has_critic:
-            nxt = "CLARIFY" if has_clarifier and not has_critic else "CRITIQUE"
-        elif speckit_writers:
-            nxt = "SPEC"
-        elif speckit_planners:
-            nxt = "PLAN"
-        elif speckit_breakers:
-            nxt = "TASKS"
-        elif speckit_implementers:
-            nxt = "IMPLEMENT"
+    # If no topology provided, build one from selected roles (backward compat)
+    if not flow_topology:
+        flow_topology = []
+    # Filter topology to only include states where all actors are in agent_ids
+    for step in flow_topology:
+        sid = step["state"]
+        raw_actors = step.get("actors", "")
+        if isinstance(raw_actors, str):
+            expected = raw_actors.replace(" ", "").split("+")
+            actors = [a for a in agent_ids if a in expected]
+        elif isinstance(raw_actors, list):
+            actors = [a for a in agent_ids if a in raw_actors]
         else:
-            nxt = "DONE"
-        states[sid] = make_state(sid, goal, designers, self_gate(designers, nxt))
+            actors = []
+        if not actors:
+            continue
+        g = step.get("gate", {})
+        gt = g.get("type", "decision")
+        outputs = step.get("output_artifacts", [])
+
+        if gt == "product":
+            gate = product_gate(actors, outputs[0] if outputs else f"{sid.lower()}.md",
+                                g["pass"], g.get("fail", "ABORT"), g.get("max", 3))
+        else:
+            gate = self_gate(actors, g["pass"], g.get("fail", "ABORT"), g.get("max", 3))
+
+        states[sid] = make_state(sid, step.get("description", sid), actors, gate,
+                                 output_artifacts=outputs)
         order.append(sid)
-
-    # CRITIQUE / REVISION debate chain
-    if has_critic and critics:
-        nxt_ok = "CLARIFY" if has_clarifier else ("MEDIATE" if has_mediator else "FINAL_DECISION" if has_decider else "REVISION")
-        states["CRITIQUE"] = make_state("CRITIQUE", "审查方案", critics,
-            make_gate(critics, ["APPROVE"], ["REQUEST_CHANGES"], nxt_ok, "REVISION", 3))
-        order.append("CRITIQUE")
-
-        revision_fail = "CLARIFY" if has_clarifier else ("MEDIATE" if has_mediator else "FINAL_DECISION" if has_decider else "ABORT")
-        states["REVISION"] = make_state("REVISION", "回应批评", designers,
-            self_gate(designers, "CRITIQUE", revision_fail, 3))
-        order.append("REVISION")
-
-        if has_mediator:
-            meds = [a for a, r in roles.items() if r == "mediator"]
-            nxt = "CLARIFY" if has_clarifier else "FINAL_DECISION"
-            states["MEDIATE"] = make_state("MEDIATE", "调解分歧", meds,
-                self_gate(meds, nxt, "ABORT", 2))
-            order.append("MEDIATE")
-
-        if has_decider:
-            decs = [a for a, r in roles.items() if r == "decider"]
-            states["FINAL_DECISION"] = make_state("FINAL_DECISION", "最终决策", decs,
-                self_gate(decs, "DONE", "ABORT", 2))
-            order.append("FINAL_DECISION")
-
-    # Speckit pipeline: SPEC → PLAN → TASKS → IMPLEMENT → REVIEW → DONE
-
-    if speckit_writers:
-        next_s = "PLAN" if speckit_planners else ("TASKS" if speckit_breakers else "IMPLEMENT")
-        states["SPEC"] = make_state("SPEC", "编写规格文档 → 必须产出 spec.md", speckit_writers,
-            product_gate(speckit_writers, "spec.md", next_s, "SPEC", 3),
-            output_artifacts=["spec.md"])
-        order.append("SPEC")
-
-    if speckit_planners:
-        next_s = "TASKS" if speckit_breakers else "IMPLEMENT"
-        states["PLAN"] = make_state("PLAN", "制定技术方案 → 必须产出 plan.md", speckit_planners,
-            product_gate(speckit_planners, "plan.md", next_s, "PLAN", 3),
-            output_artifacts=["plan.md"])
-        order.append("PLAN")
-
-    if speckit_breakers:
-        next_s = "IMPLEMENT" if speckit_implementers else "DONE"
-        states["TASKS"] = make_state("TASKS", "分解任务 → 必须产出 tasks.md", speckit_breakers,
-            product_gate(speckit_breakers, "tasks.md", next_s, "TASKS", 3),
-            output_artifacts=["tasks.md"])
-        order.append("TASKS")
-
-    # Non-debate flow: DESIGN → IMPLEMENT → REVIEW → DONE
-    if not (has_critic and critics):
-        implementers = [a for a, r in roles.items() if r in ("implementer", "tester")]
-        reviewers = [a for a, r in roles.items() if r in ("reviewer", "tester")]
-        if implementers:
-            impl_next = "REVIEW" if reviewers else "DONE"
-            states["IMPLEMENT"] = make_state("IMPLEMENT", "实现方案", implementers,
-                self_gate(implementers, impl_next, "ABORT", 3))
-            order.append("IMPLEMENT")
-        if reviewers:
-            states["REVIEW"] = make_state("REVIEW", "审查实现", reviewers,
-                make_gate(reviewers, ["APPROVE"], ["REQUEST_CHANGES"], "DONE", "IMPLEMENT", 3))
-            order.append("REVIEW")
 
     for tid in ["DONE", "ABORT"]:
         if tid not in states:
@@ -726,9 +664,28 @@ def main():
     # Phase 1: Manager selects agents + team skill
     agent_ids = manager_select_agents(goal, agents)
 
+    # Read team flow topology from manager/skills/ (YAML frontmatter)
+    import yaml as yaml_lib
+    team_skills_dir = Path(__file__).resolve().parent / "agents" / "manager" / "skills"
+    flow_topology = []
+    # Pick first matching team skill based on selected agents
+    for skill_file in sorted(team_skills_dir.glob("*.md")):
+        text = skill_file.read_text(encoding="utf-8")
+        if text.startswith("---"):
+            parts = text.split("---", 2)
+            if len(parts) >= 3:
+                fm = yaml_lib.safe_load(parts[1])
+                team_agents = set(fm.get("agents", []))
+                if team_agents and team_agents.issubset(set(agent_ids)):
+                    flow_topology = fm.get("flow", [])
+                    print(f"  采用班底: {fm.get('name', skill_file.stem)} ({len(flow_topology)} 个状态)")
+                    break
+    if not flow_topology:
+        print("  ⚠️ 未匹配到班底，使用默认空拓扑")
+
     # Phase 2: Manager generates flow YAML
     print("\n📄 生成 Flow YAML...")
-    yaml_path = generate_yaml(goal, agent_ids, run_name, agents)
+    yaml_path = generate_yaml(goal, agent_ids, run_name, agents, flow_topology)
     print(f"   → {yaml_path}")
 
     # Phase 3: Flow engine runs (NOT manager)
