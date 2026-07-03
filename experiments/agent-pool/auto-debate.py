@@ -203,6 +203,7 @@ def product_gate(roles, required_file: str, on_pass: str, on_fail: str = "", max
         "blocked_values": ["BLOCKED"],
         "on_pass": on_pass,
         "on_fail": on_fail,
+        "on_exhausted": "ABORT",
         "max_rounds": max_r,
     }
 
@@ -287,21 +288,21 @@ def generate_yaml(goal: str, agent_ids: list[str], run_name: str, agents: dict) 
     if speckit_writers:
         next_s = "PLAN" if speckit_planners else ("TASKS" if speckit_breakers else "IMPLEMENT")
         states["SPEC"] = make_state("SPEC", "编写规格文档 → 必须产出 spec.md", speckit_writers,
-            product_gate(speckit_writers, "spec.md", next_s, "ABORT", 3),
+            product_gate(speckit_writers, "spec.md", next_s, "SPEC", 3),
             output_artifacts=["spec.md"])
         order.append("SPEC")
 
     if speckit_planners:
         next_s = "TASKS" if speckit_breakers else "IMPLEMENT"
         states["PLAN"] = make_state("PLAN", "制定技术方案 → 必须产出 plan.md", speckit_planners,
-            product_gate(speckit_planners, "plan.md", next_s, "ABORT", 3),
+            product_gate(speckit_planners, "plan.md", next_s, "PLAN", 3),
             output_artifacts=["plan.md"])
         order.append("PLAN")
 
     if speckit_breakers:
         next_s = "IMPLEMENT" if speckit_implementers else "DONE"
         states["TASKS"] = make_state("TASKS", "分解任务 → 必须产出 tasks.md", speckit_breakers,
-            product_gate(speckit_breakers, "tasks.md", next_s, "ABORT", 3),
+            product_gate(speckit_breakers, "tasks.md", next_s, "TASKS", 3),
             output_artifacts=["tasks.md"])
         order.append("TASKS")
 
