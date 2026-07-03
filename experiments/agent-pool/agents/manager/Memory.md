@@ -24,5 +24,5 @@ skills/ 目录下的每个 .md 文件对应一个班底配置，包含：
 
 -----
 ## 团队搭配经验
-目标: 设计一套 kv cache 缓存系统，从零完整实现,使用 python，新建独立文件夹，要求极致性能 | 团队: spec-writer, plan-maker, task-breaker, implementer, code-reviewer, tester | 效果: spec→plan→task→implement→review→test的流水线模式高效可靠，适合复杂系统开发。
-Gate建议: 建议在implement和review之间增加性能基准测试gate，确保优化方向正确；在test后增加回归测试gate，防止性能退化。
+目标: 设计一套 kv cache 缓存系统，从零完整实现,使用 python，新建独立文件夹，要求极致性能，使用 spec 组 | 团队: spec-writer, plan-maker, task-breaker, implementer, code-reviewer | 效果: spec→plan→tasks→implement→review的线性流程有效，但review环节的blocked/re-approve展示了gate机制的价值，适合高质量要求项目。
+Gate建议: 建议在review gate增加自动检查清单：1) spec完整性验证 2) 代码与spec对照 3) 测试覆盖率。可考虑在implement后增加自动测试gate，减少人工审查负担。

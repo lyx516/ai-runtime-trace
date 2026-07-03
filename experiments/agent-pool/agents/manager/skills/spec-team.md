@@ -17,6 +17,8 @@ flow:
     pass: PLAN
     fail: SPEC
     max: 3
+  output_artifacts:
+  - spec.md
 - state: PLAN
   description: 制定技术方案
   actors: plan-maker
@@ -26,6 +28,8 @@ flow:
     pass: TASKS
     fail: PLAN
     max: 3
+  output_artifacts:
+  - plan.md
 - state: TASKS
   description: 分解任务清单
   actors: task-breaker
@@ -35,6 +39,8 @@ flow:
     pass: IMPLEMENT
     fail: TASKS
     max: 3
+  output_artifacts:
+  - tasks.md
 - state: IMPLEMENT
   description: 编写实现代码
   actors: implementer
@@ -52,7 +58,11 @@ flow:
     pass: DONE
     fail: IMPLEMENT
     max: 2
+  output_artifacts:
+  - review.md
 ---
+
+
 
 # 规格流水线班底
 

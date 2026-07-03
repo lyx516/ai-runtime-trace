@@ -22,7 +22,11 @@ flow:
     pass: DONE
     fail: IMPLEMENT
     max: 2
+  output_artifacts:
+  - test-report.md
 ---
+
+
 
 # 快捷修复班底
 

@@ -15,6 +15,8 @@ flow:
     pass: ANALYZE
     fail: RESEARCH
     max: 2
+  output_artifacts:
+  - research.md
 - state: ANALYZE
   description: 数据分析
   actors: analyst
@@ -24,6 +26,8 @@ flow:
     pass: REPORT
     fail: ANALYZE
     max: 2
+  output_artifacts:
+  - analysis.md
 - state: REPORT
   description: 撰写报告
   actors: writer
@@ -33,7 +37,11 @@ flow:
     pass: DONE
     fail: REPORT
     max: 2
+  output_artifacts:
+  - report.md
 ---
+
+
 
 # 调研班底
 

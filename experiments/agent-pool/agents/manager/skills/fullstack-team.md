@@ -58,6 +58,8 @@ flow:
     pass: DOC
     fail: IMPLEMENT
     max: 2
+  output_artifacts:
+  - test-report.md
 - state: DOC
   description: 撰写文档
   actors: writer
@@ -67,7 +69,11 @@ flow:
     pass: DONE
     fail: DOC
     max: 2
+  output_artifacts:
+  - README.md
 ---
+
+
 
 # 全栈班底
 

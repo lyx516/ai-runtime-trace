@@ -259,6 +259,8 @@ def generate_yaml(goal: str, agent_ids: list[str], run_name: str, agents: dict,
         g = step.get("gate", {})
         gt = g.get("type", "decision")
         outputs = step.get("output_artifacts", [])
+        if not outputs and gt == "product" and g.get("file"):
+            outputs = [g["file"]]
 
         if gt == "product":
             gate = product_gate(actors, outputs[0] if outputs else f"{sid.lower()}.md",
@@ -491,7 +493,7 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
                         tool_result = exec_tool(role_id, tool_name, tool_args)
                     print(f"     🔧 {tool_name}: {'✅' if tool_result.get('ok') else '❌'} {str(tool_result)[:80]}")
 
-                # Product gate enforcement: verify required artifacts exist
+                # Product gate enforcement: verify output artifacts exist
                 output_artifacts = state_dict.get("output_artifacts", [])
                 if output_artifacts:
                     for art_name in output_artifacts:
