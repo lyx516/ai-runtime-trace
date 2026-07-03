@@ -10,6 +10,8 @@ venv/
 
 # Runtime
 .hermes-flow/runs/
+**/.hermes-flow/runs/
+experiments/*/fsm_run_id.txt
 
 # OS
 .DS_Store

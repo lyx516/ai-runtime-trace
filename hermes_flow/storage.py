@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS runs (
     completed_at TEXT,
     agent_bindings TEXT NOT NULL DEFAULT '[]',
     memory_modes TEXT NOT NULL DEFAULT '{}',
-    artifact_root TEXT NOT NULL
+    artifact_root TEXT NOT NULL,
+    display_name TEXT
 );
 
 CREATE TABLE IF NOT EXISTS agents (
@@ -156,6 +157,18 @@ CREATE TABLE IF NOT EXISTS trace_events (
 CREATE INDEX IF NOT EXISTS idx_trace_events_trace ON trace_events(trace_id);
 CREATE INDEX IF NOT EXISTS idx_trace_events_type ON trace_events(event_type);
 CREATE INDEX IF NOT EXISTS idx_trace_events_run  ON trace_events(run_id, trace_id);
+
+CREATE TABLE IF NOT EXISTS thinking_events (
+    row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    role_id TEXT NOT NULL,
+    state_id TEXT NOT NULL DEFAULT '',
+    step_type TEXT NOT NULL,
+    inputs_json TEXT NOT NULL DEFAULT '{}',
+    output_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_thinking_run  ON thinking_events(run_id, created_at);
 """
 
 
@@ -197,6 +210,11 @@ class RuntimeStore:
         """Create all tables if they do not exist."""
         conn = self.connect()
         conn.executescript(SCHEMA_SQL)
+        # Migration: add display_name column to existing databases
+        try:
+            conn.execute("ALTER TABLE runs ADD COLUMN display_name TEXT")
+        except Exception:
+            pass  # Column already exists
         conn.commit()
 
     # ── Transaction helper ─────────────────────────────────────────────────
@@ -227,6 +245,65 @@ class RuntimeStore:
         conn.commit()
         return event_id
 
+    def append_thinking_event(
+        self,
+        run_id: str,
+        role_id: str,
+        state_id: str,
+        step_type: str,
+        inputs: dict | None = None,
+        output: dict | None = None,
+    ) -> int:
+        """Persist an agent_thinking event to the thinking_events table."""
+        conn = self.connect()
+        cur = conn.execute(
+            """INSERT INTO thinking_events (run_id, role_id, state_id, step_type,
+               inputs_json, output_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (run_id, role_id, state_id, step_type,
+             json_dumps(inputs or {}), json_dumps(output or {}), _now()),
+        )
+        conn.commit()
+        return cur.lastrowid or 0
+
+    def load_thinking_events(
+        self,
+        run_id: str,
+        role_id: str | None = None,
+        state_id: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Query thinking events for a run, optionally filtered."""
+        import json
+
+        sql = "SELECT * FROM thinking_events WHERE run_id=?"
+        params: list = [run_id]
+        if role_id:
+            sql += " AND role_id=?"
+            params.append(role_id)
+        if state_id:
+            sql += " AND state_id=?"
+            params.append(state_id)
+        sql += " ORDER BY created_at ASC LIMIT ?"
+        params.append(limit)
+
+        conn = self.connect()
+        rows = conn.execute(sql, params).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["inputs"] = json.loads(d.get("inputs_json", "{}"))
+            except Exception:
+                d["inputs"] = {}
+            try:
+                d["output"] = json.loads(d.get("output_json", "{}"))
+            except Exception:
+                d["output"] = {}
+            del d["inputs_json"]
+            del d["output_json"]
+            result.append(d)
+        return result
+
     # ── Create run ────────────────────────────────────────────────────────
 
     def create_run(
@@ -239,6 +316,7 @@ class RuntimeStore:
         artifact_root: str,
         states_json: dict[str, Any],
         override_run_id: str | None = None,
+        display_name: str | None = None,
     ) -> FlowRun:
         """Initialize a new run directory and SQLite database."""
         tracer = get_tracer()
@@ -271,12 +349,13 @@ class RuntimeStore:
             conn = self.connect()
             conn.execute(
                 """INSERT INTO runs (run_id, flow_id, flow_version, status, current_state_id,
-                   round_counters, created_at, updated_at, agent_bindings, memory_modes, artifact_root)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   round_counters, created_at, updated_at, agent_bindings, memory_modes,
+                   artifact_root, display_name)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (run.run_id, run.flow_id, run.flow_version, run.status.value,
                  run.current_state_id, json_dumps(run.round_counters),
                  run.created_at, run.updated_at, json_dumps([to_dict(b) for b in run.agent_bindings]),
-                 json_dumps(run.memory_modes), run.artifact_root),
+                 json_dumps(run.memory_modes), run.artifact_root, display_name),
             )
 
             # Persist states

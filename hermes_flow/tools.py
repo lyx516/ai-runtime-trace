@@ -148,6 +148,7 @@ def flow_init(
         artifact_root=artifact_root,
         states_json=states_json,
         override_run_id=run_id,
+        display_name=run_name or None,
     )
 
     result = ok_result({
@@ -319,8 +320,29 @@ def flow_send(
 
         from json import loads as json_loads
         state_dict = json_loads(state_row["state_json"])
-        # Build routing policies from state's actor list
-        routing_policies: dict[str, list[str]] = {from_role: state_dict.get("actors", [])}
+
+        # FR-006 sender check: from_role must be a valid agent in this flow run
+        conn2 = store.connect()
+        agent_exists = conn2.execute(
+            "SELECT 1 FROM agents WHERE run_id = ? AND role_id = ?",
+            (run_id, from_role),
+        ).fetchone()
+        if agent_exists is None:
+            actors = state_dict.get("actors", [])
+            result = error_result(
+                f"Sender '{from_role}' is not a registered agent in this run. "
+                f"Known agents: {[r['role_id'] for r in conn2.execute('SELECT role_id FROM agents WHERE run_id=?', (run_id,)).fetchall()]}"
+            )
+            span.outputs = result
+            return result
+
+        # Build routing policies: allow sender to reach any known agent
+        all_agent_roles = [
+            r["role_id"] for r in conn.execute(
+                "SELECT role_id FROM agents WHERE run_id = ?", (run_id,)
+            ).fetchall()
+        ]
+        routing_policies: dict[str, list[str]] = {from_role: all_agent_roles}
 
         # Validate via router
         route_result = validate_message(
@@ -352,9 +374,10 @@ def flow_send(
         # Persist message record
         store.record_message_attempt(envelope)
 
-        # If valid, deliver inbox entries
+        # If valid, deliver inbox entries to each authorized recipient
         if route_result.valid and route_result.authorized_recipients:
-            store.add_inbox_entries(run_id, from_role, state_id, [message_id])
+            for recipient in route_result.authorized_recipients:
+                store.add_inbox_entries(run_id, recipient, state_id, [message_id])
 
         result = ok_result({
             "message_id": message_id,

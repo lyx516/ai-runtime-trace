@@ -116,15 +116,15 @@
 
 ### Tests for User Story 3
 
-- [ ] T020 [P] [US3] Write flow_status test in `tests/hermes_flow/test_tools.py` proving that `flow_status()` returns run_id, current_state_id, agent_bindings, and pending_gate structure matching the OpenAPI contract from feature 001.
-- [ ] T021 [US3] Write flow_step test in `tests/hermes_flow/test_tools.py` proving that `flow_step()` processes decisions and advances state when gate is satisfied. (Not [P] — shares file T020.)
-- [ ] T022 [US3] Write flow_send test in `tests/hermes_flow/test_tools.py` proving that `flow_send()` with valid recipients creates a message record and inbox entries. (Not [P] — shares file T020.)
-- [ ] T023 [US3] Write flow_send rejection test in `tests/hermes_flow/test_tools.py` proving that `flow_send()` with invalid recipients returns a rejected delivery outcome with zero inbox entries. (Not [P] — shares file T020.)
-- [ ] T024 [US3] Write flow_decide test in `tests/hermes_flow/test_tools.py` proving that `flow_decide()` persists a decision and appends an audit event. (Not [P] — shares file T020.)
-- [ ] T025 [US3] Write flow_pause test in `tests/hermes_flow/test_tools.py` proving that `flow_pause()` changes run status to `paused` and subsequent step/send/decide calls raise an error. (Not [P] — shares file T020.)
-- [ ] T026 [US3] Write flow_resume test in `tests/hermes_flow/test_tools.py` proving that `flow_resume()` restores run status to `active`. (Not [P] — shares file T020.)
-- [ ] T027 [US3] Write flow_abort test in `tests/hermes_flow/test_tools.py` proving that `flow_abort()` changes run status to `aborted` and all future operations fail. (Not [P] — shares file T020.)
-- [ ] T028 [US3] Write idempotent lifecycle test in `tests/hermes_flow/test_tools.py` proving that pause/pause, abort/abort, and resume/active are idempotent (return success without error). (Not [P] — shares file T020.)
+- [X] T020 [P] [US3] Write flow_status test in `tests/hermes_flow/test_tools.py` proving that `flow_status()` returns run_id, current_state_id, agent_bindings, and pending_gate structure matching the OpenAPI contract from feature 001.
+- [X] T021 [US3] Write flow_step test in `tests/hermes_flow/test_tools.py` proving that `flow_step()` processes decisions and advances state when gate is satisfied. (Not [P] — shares file T020.)
+- [X] T022 [US3] Write flow_send test in `tests/hermes_flow/test_tools.py` proving that `flow_send()` with valid recipients creates a message record and inbox entries. (Not [P] — shares file T020.)
+- [X] T023 [US3] Write flow_send rejection test in `tests/hermes_flow/test_tools.py` proving that `flow_send()` with invalid recipients returns a rejected delivery outcome with zero inbox entries. (Not [P] — shares file T020.)
+- [X] T024 [US3] Write flow_decide test in `tests/hermes_flow/test_tools.py` proving that `flow_decide()` persists a decision and appends an audit event. (Not [P] — shares file T020.)
+- [X] T025 [US3] Write flow_pause test in `tests/hermes_flow/test_tools.py` proving that `flow_pause()` changes run status to `paused` and subsequent step/send/decide calls raise an error. (Not [P] — shares file T020.)
+- [X] T026 [US3] Write flow_resume test in `tests/hermes_flow/test_tools.py` proving that `flow_resume()` restores run status to `active`. (Not [P] — shares file T020.)
+- [X] T027 [US3] Write flow_abort test in `tests/hermes_flow/test_tools.py` proving that `flow_abort()` changes run status to `aborted` and all future operations fail. (Not [P] — shares file T020.)
+- [X] T028 [US3] Write idempotent lifecycle test in `tests/hermes_flow/test_tools.py` proving that pause/pause, abort/abort, and resume/active are idempotent (return success without error). (Not [P] — shares file T020.)
 
 ### Implementation for User Story 3
 

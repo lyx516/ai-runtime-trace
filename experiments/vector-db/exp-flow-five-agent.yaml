@@ -1,0 +1,37 @@
+flow_id: five-agent-test
+name: "5-agent stress test"
+version: 1
+initial_state_id: REVIEW
+terminal_state_ids: [DONE]
+
+agents:
+  alice:
+    profile_name: alice
+    soul: "Alice, the coordinator"
+  bob:
+    profile_name: bob
+    soul: "Bob, the backend engineer"
+  carol:
+    profile_name: carol
+    soul: "Carol, the frontend engineer"
+  dave:
+    profile_name: dave
+    soul: "Dave, the data scientist"
+  eve:
+    profile_name: eve
+    soul: "Eve, the QA engineer"
+
+states:
+  REVIEW:
+    actors: [alice, bob, carol, dave, eve]
+    gate:
+      type: decision
+      required_roles: [alice, bob, carol, dave, eve]
+      pass_values: [APPROVE]
+      fail_values: [REQUEST_CHANGES]
+      on_pass: DONE
+      on_fail: REVIEW
+      max_rounds: 5
+  DONE:
+    terminal: true
+    actors: []

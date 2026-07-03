@@ -194,6 +194,13 @@ def validate_flow(flow: FlowDefinition) -> None:
                 if not state.on_exhausted:
                     errors.append(f"State '{sid}' has idle_timeout_seconds={state.idle_timeout_seconds} but no on_exhausted path")
 
+        # 8. gate on_pass/on_fail/on_blocked/on_exhausted targets exist
+        for sid, state in flow.states.items():
+            if state.gate:
+                for target in [state.gate.on_pass, state.gate.on_fail, state.gate.on_blocked, state.gate.on_exhausted]:
+                    if target and target not in flow.states:
+                        errors.append(f"State '{sid}' gate has target '{target}' which does not exist in states")
+
         span.outputs = {"valid": len(errors) == 0, "error_count": len(errors)}
         span.decisions = {} if not errors else {"validation_errors": errors}
 
