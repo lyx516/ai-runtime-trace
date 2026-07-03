@@ -207,10 +207,12 @@ def product_gate(roles, required_file: str, on_pass: str, on_fail: str = "", max
     }
 
 
-def make_state(sid, desc, actors, gate=None):
+def make_state(sid, desc, actors, gate=None, output_artifacts=None):
     s = {"description": desc, "actors": actors}
     if gate:
         s["gate"] = gate
+    if output_artifacts:
+        s["output_artifacts"] = output_artifacts
     return s
 
 
@@ -285,19 +287,22 @@ def generate_yaml(goal: str, agent_ids: list[str], run_name: str, agents: dict) 
     if speckit_writers:
         next_s = "PLAN" if speckit_planners else ("TASKS" if speckit_breakers else "IMPLEMENT")
         states["SPEC"] = make_state("SPEC", "编写规格文档 → 必须产出 spec.md", speckit_writers,
-            product_gate(speckit_writers, "spec.md", next_s, "ABORT", 3))
+            product_gate(speckit_writers, "spec.md", next_s, "ABORT", 3),
+            output_artifacts=["spec.md"])
         order.append("SPEC")
 
     if speckit_planners:
         next_s = "TASKS" if speckit_breakers else "IMPLEMENT"
         states["PLAN"] = make_state("PLAN", "制定技术方案 → 必须产出 plan.md", speckit_planners,
-            product_gate(speckit_planners, "plan.md", next_s, "ABORT", 3))
+            product_gate(speckit_planners, "plan.md", next_s, "ABORT", 3),
+            output_artifacts=["plan.md"])
         order.append("PLAN")
 
     if speckit_breakers:
         next_s = "IMPLEMENT" if speckit_implementers else "DONE"
         states["TASKS"] = make_state("TASKS", "分解任务 → 必须产出 tasks.md", speckit_breakers,
-            product_gate(speckit_breakers, "tasks.md", next_s, "ABORT", 3))
+            product_gate(speckit_breakers, "tasks.md", next_s, "ABORT", 3),
+            output_artifacts=["tasks.md"])
         order.append("TASKS")
 
     # Non-debate flow: DESIGN → IMPLEMENT → REVIEW → DONE
@@ -527,16 +532,16 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
                         tool_result = exec_tool(role_id, tool_name, tool_args)
                     print(f"     🔧 {tool_name}: {'✅' if tool_result.get('ok') else '❌'} {str(tool_result)[:80]}")
 
-                # Product gate enforcement: verify required file exists
-                gate_type = gate.get("type", "decision")
-                required_file = gate.get("required_file", "")
-                if gate_type == "product" and required_file:
-                    file_path = Path(PROJECT_ROOT) / required_file
-                    if file_path.exists() and file_path.stat().st_size > 0:
-                        print(f"     📄 产物 {required_file} 存在 ({(file_path.stat().st_size)} bytes) ✅")
-                    else:
-                        print(f"     ⚠️  产物 {required_file} 缺失！降级为 REQUEST_CHANGES")
-                        val = "REQUEST_CHANGES"
+                # Product gate enforcement: verify required artifacts exist
+                output_artifacts = state_dict.get("output_artifacts", [])
+                if output_artifacts:
+                    for art_name in output_artifacts:
+                        art_path = Path(PROJECT_ROOT) / art_name
+                        if art_path.exists() and art_path.stat().st_size > 0:
+                            print(f"     📄 {art_name} ({art_path.stat().st_size} bytes) ✅")
+                        else:
+                            print(f"     ⚠️  产物 {art_name} 缺失！降级为 REQUEST_CHANGES")
+                            val = "REQUEST_CHANGES"
 
                 flow_decide(run_id, state_id, role_id, val, resp.get("reason", ""))
 
