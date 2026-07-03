@@ -466,12 +466,6 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
             sys_p, usr_p = agent_prompt(role_id, soul, goal, state_id, cur_round,
                                          all_msgs, inbox_rows, gate, tools_list)
 
-            # Inject mandatory output instruction for product-gate states
-            output_artifacts = state_dict.get("output_artifacts", [])
-            if output_artifacts:
-                arts_str = ", ".join(output_artifacts)
-                usr_p += f"\n\n⚠️ **硬性要求：你必须用 file_write 写入 {arts_str}，才能提交 APPROVE**\n先呼叫 file_write 工具写入 {arts_str}，内容可以正式开始创作。写完后 gate 会验证文件存在。\n如果直接 APPROVE 不写文件，gate 会退回重做，直到 3 次后终止。"
-
             print(f"  🤖 {role_id}...", end="", flush=True)
             t0 = time.time()
             try:
@@ -580,6 +574,20 @@ def manager_evaluate(run_id: str, goal: str, agent_ids: list[str],
         for r in all_decs
     ])
 
+    # Scan for deliverable files produced by agents
+    deliverables = {}
+    for fname in ["spec.md", "plan.md", "tasks.md", "review.md", "test-report.md",
+                   "research.md", "analysis.md", "report.md", "README.md"]:
+        fpath = Path(PROJECT_ROOT) / fname
+        if fpath.exists() and fpath.stat().st_size > 0:
+            content = fpath.read_text(encoding="utf-8", errors="ignore")
+            deliverables[fname] = content[:500]
+    deliverables_text = ""
+    if deliverables:
+        deliverables_text = "\n## 交付物检查\n" + "\n".join(
+            f"### {name}\n{content[:300]}" for name, content in deliverables.items()
+        )
+
     # Use LLM as manager to evaluate
     manager_info = agents.get("manager", {})
     soul = manager_info.get("soul", "")
@@ -589,15 +597,17 @@ def manager_evaluate(run_id: str, goal: str, agent_ids: list[str],
 
 {soul[:300]}
 
-为每个 agent 写一段简短的评语（中文，50-100字），指出：
-1. 该 agent 是否有效履行了其角色职责
-2. 表现亮点或需要改进之处
-3. 是否展示了有用的技巧（可保存为 skill）
+评审要求：
+1. 逐一检查每个 agent 是否产出了应有的交付物文件
+2. 交付物内容是否与任务目标一致
+3. 该 agent 是否有效履行了角色职责
+4. 表现亮点或需要改进之处
+5. 是否展示了有用的技巧（可保存为 skill）
 
 响应 JSON:
-{{"evaluations": {{"agent_id": "评语", ...}},
-  "team_pattern": "这个团队搭配在这次任务中的效果总结（30-50字）",
-  "gate_suggestion": "关于 gate 设置的改进建议"}}"""
+{{"evaluations": {{"agent_id": "评语（含交付物评价）", ...}},
+  "team_pattern": "团队搭配效果总结（30-50字）",
+  "gate_suggestion": "gate 改进建议"}}"""
 
     user = f"""## 任务目标
 {goal}
@@ -609,7 +619,10 @@ def manager_evaluate(run_id: str, goal: str, agent_ids: list[str],
 {transcript[:2000]}
 
 ## 决策序列
-{decisions_summary[:1000]}"""
+{decisions_summary[:1000]}
+
+## 交付物文件
+{deliverables_text[:2000]}"""
 
     print("  🤖 管理 Agent 评审中...")
     result = call_llm(system, user, temperature=0.4, max_tokens=2000)
@@ -698,10 +711,37 @@ def main():
     if not flow_topology:
         print("  ⚠️ 未匹配到班底，使用默认空拓扑")
 
-    # Phase 2: Manager generates flow YAML
+    # Phase 2: Manager generates flow YAML + briefs agents
     print("\n📄 生成 Flow YAML...")
     yaml_path = generate_yaml(goal, agent_ids, run_name, agents, flow_topology)
     print(f"   → {yaml_path}")
+
+    # Manager briefs each agent via inbox
+    print("\n📨 管理者发送任务简报...")
+    sys.path.insert(0, PROJECT_ROOT)
+    os.environ["HERMES_FLOW_PROJECT_ROOT"] = PROJECT_ROOT
+    from hermes_flow.tools import flow_send
+    # We need a run_id to send messages. Use YAML's flow_id or init a placeholder.
+    # Actually, inbox is only available after flow_init. Let's write briefing to
+    # each agent's Memory.md instead via agent_tools.
+    from agent_tools import memory_write
+    for aid in agent_ids:
+        info = agents.get(aid, {})
+        role = info.get("role", aid)
+        # Build concise briefing
+        briefing = f"## 任务简报\n目标: {goal[:120]}\n"
+        # Add deliverable expectations from flow topology
+        for step in flow_topology:
+            raw_actors = step.get("actors", "")
+            expected = raw_actors.replace(" ", "").split("+")
+            if aid in expected:
+                arts = step.get("output_artifacts", [])
+                if arts:
+                    briefing += f"你需要产出: {', '.join(arts)}\n"
+                briefing += f"阶段: {step['state']} — {step.get('description', '')}\n"
+        briefing += f"\n请仔细阅读你的 SOUL.md 中的不可违反规则，完成任务后提交 APPROVE。"
+        memory_write(aid, briefing, mode="append")
+        print(f"  ✅ {aid}: 已收到任务简报")
 
     # Phase 3: Flow engine runs (NOT manager)
     run_flow(goal, agent_ids, yaml_path, run_name, agents)
