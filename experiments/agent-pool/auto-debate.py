@@ -24,6 +24,7 @@ from pathlib import Path
 
 PROJECT_ROOT = "/Users/liyuxuan/ai-runtime-trace"
 AGENTS_DIR = Path(PROJECT_ROOT) / "experiments" / "agent-pool" / "agents"
+SHARED_SKILLS_DIR = Path(PROJECT_ROOT) / "experiments" / "agent-pool" / "shared" / "skills"
 OUTPUT_DIR = Path(PROJECT_ROOT) / "experiments" / "agent-pool" / "generated"
 
 
@@ -40,6 +41,23 @@ def load_agents() -> dict:
             with open(meta) as f:
                 info = yaml.safe_load(f)
                 info["_path"] = str(d)
+                # Resolve assigned skills from shared/skills/
+                assigned = info.get("assigned_skills", [])
+                resolved = []
+                if SHARED_SKILLS_DIR.exists():
+                    for sid in assigned:
+                        sp = SHARED_SKILLS_DIR / sid / "SKILL.md"
+                        if sp.exists():
+                            text = sp.read_text(encoding="utf-8")
+                            desc = sid
+                            if text.startswith("---"):
+                                parts = text.split("---", 2)
+                                if len(parts) >= 3:
+                                    import yaml as y2
+                                    fm = y2.safe_load(parts[1])
+                                    desc = fm.get("description", sid)
+                            resolved.append({"id": sid, "description": desc, "content": text[:1000]})
+                info["_assigned_skills"] = resolved
                 agents[info["agent_id"]] = info
     return agents
 
@@ -174,6 +192,21 @@ def self_gate(roles, on_pass, on_fail="", max_r=1):
                      on_pass, on_fail, max_r)
 
 
+def product_gate(roles, required_file: str, on_pass: str, on_fail: str = "", max_r: int = 2):
+    """Product gate: checks delivered file exists. No LLM subjectivity."""
+    return {
+        "type": "product",
+        "required_roles": roles,
+        "required_file": required_file,
+        "pass_values": ["APPROVE"],
+        "fail_values": ["REQUEST_CHANGES"],
+        "blocked_values": ["BLOCKED"],
+        "on_pass": on_pass,
+        "on_fail": on_fail,
+        "max_rounds": max_r,
+    }
+
+
 def make_state(sid, desc, actors, gate=None):
     s = {"description": desc, "actors": actors}
     if gate:
@@ -251,20 +284,20 @@ def generate_yaml(goal: str, agent_ids: list[str], run_name: str, agents: dict) 
 
     if speckit_writers:
         next_s = "PLAN" if speckit_planners else ("TASKS" if speckit_breakers else "IMPLEMENT")
-        states["SPEC"] = make_state("SPEC", "编写规格文档", speckit_writers,
-            self_gate(speckit_writers, next_s))
+        states["SPEC"] = make_state("SPEC", "编写规格文档 → 必须产出 spec.md", speckit_writers,
+            product_gate(speckit_writers, "spec.md", next_s, "SPEC", 3))
         order.append("SPEC")
 
     if speckit_planners:
         next_s = "TASKS" if speckit_breakers else "IMPLEMENT"
-        states["PLAN"] = make_state("PLAN", "制定技术方案", speckit_planners,
-            self_gate(speckit_planners, next_s))
+        states["PLAN"] = make_state("PLAN", "制定技术方案 → 必须产出 plan.md", speckit_planners,
+            product_gate(speckit_planners, "plan.md", next_s, "PLAN", 3))
         order.append("PLAN")
 
     if speckit_breakers:
         next_s = "IMPLEMENT" if speckit_implementers else "DONE"
-        states["TASKS"] = make_state("TASKS", "分解任务", speckit_breakers,
-            self_gate(speckit_breakers, next_s))
+        states["TASKS"] = make_state("TASKS", "分解任务 → 必须产出 tasks.md", speckit_breakers,
+            product_gate(speckit_breakers, "tasks.md", next_s, "TASKS", 3))
         order.append("TASKS")
 
     # Non-debate flow: DESIGN → IMPLEMENT → REVIEW → DONE
@@ -351,7 +384,9 @@ def agent_prompt(role_id: str, soul: str, goal: str, state_id: str, round_n: int
 - 场景有**足够的复杂度**（不是"用requests发HTTP"这种单行常识）
 - 你刚对**某个经常写的模块/项目**完成了有价值的总结（架构决策、踩坑记录、配置模板）
 
-不满足以上条件时，用 memory_write 记录一次性信息即可，别滥用 skill_create。"""
+不满足以上条件时，用 memory_write 记录一次性信息即可，别滥用 skill_create。
+
+⚠️ **产物要求**：如果 gate 指定了 required_file，你必须用 file_write 写入，否则 gate 会退回。"""
 
     user = f"""## 辩论上下文
 **状态**: {state_id}（第{round_n}轮） **目标**: {goal}
@@ -491,6 +526,17 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
                     else:
                         tool_result = exec_tool(role_id, tool_name, tool_args)
                     print(f"     🔧 {tool_name}: {'✅' if tool_result.get('ok') else '❌'} {str(tool_result)[:80]}")
+
+                # Product gate enforcement: verify required file exists
+                gate_type = gate.get("type", "decision")
+                required_file = gate.get("required_file", "")
+                if gate_type == "product" and required_file:
+                    file_path = Path(PROJECT_ROOT) / required_file
+                    if file_path.exists() and file_path.stat().st_size > 0:
+                        print(f"     📄 产物 {required_file} 存在 ({(file_path.stat().st_size)} bytes) ✅")
+                    else:
+                        print(f"     ⚠️  产物 {required_file} 缺失！降级为 REQUEST_CHANGES")
+                        val = "REQUEST_CHANGES"
 
                 flow_decide(run_id, state_id, role_id, val, resp.get("reason", ""))
 

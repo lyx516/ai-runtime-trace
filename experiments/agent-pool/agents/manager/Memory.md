@@ -20,3 +20,9 @@ skills/ 目录下的每个 .md 文件对应一个班底配置，包含：
 
 分析任务 → 选班底（可混编） → 注入对应 skill 到 agent 灵魂 → 生成 flow → 启动
 
+
+
+-----
+## 团队搭配经验
+目标: 实现一个完整的向量数据库，支持亿级向量近似搜索。需要实现 HNSW 索引、IVF 索引、混合查询 | 团队: spec-writer, plan-maker, task-breaker, implementer, code-reviewer, tester | 效果: spec-plan-task-implement-review-test 的线性流水线模式在此次任务中效果良好，各环节衔接顺畅，但缺少性能基准验证环节。
+Gate建议: 建议在IMPLEMENT和REVIEW之间增加一个PERFORMANCE_GATE，要求实现必须通过预设的QPS和召回率基准测试才能进入代码审查阶段。
