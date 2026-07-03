@@ -27,13 +27,14 @@
     --radius-lg: 12px;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  html { font-size: 14px; }
+  html { font-size: 14px; height: 100%; overflow: hidden; }
   body {
     background: var(--bg-base);
     color: var(--text-primary);
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
     line-height: 1.5;
-    min-height: 100dvh;
+    height: 100dvh;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
   }
@@ -42,6 +43,7 @@
     display: flex;
     flex: 1;
     overflow: hidden;
+    min-height: 0;
   }
 
   /* Sidebar */
@@ -114,6 +116,7 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    min-height: 0;
   }
 
   /* Top bar */
@@ -198,7 +201,7 @@
   .tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
 
   /* Content */
-  .content { flex: 1; overflow-y: auto; padding: 16px 20px; }
+  .content { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 16px 20px; }
   .tab-panel { display: none; }
   .tab-panel.active { display: block; }
 
@@ -387,7 +390,6 @@
     </div>
     <div id="panel-graph" class="tab-panel">
       <div id="graph-dag" style="min-height:100px"></div>
-      <div id="graph-panel" style="display:none;margin-top:12px;border-top:1px solid var(--border);padding-top:12px"></div>
     </div>
     <div id="panel-analysis" class="tab-panel"><div class="empty-state">Select a run first</div></div>
     <div id="panel-diff" class="tab-panel"><div class="empty-state">Select a run first</div></div>
