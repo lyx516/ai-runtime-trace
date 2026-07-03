@@ -1,0 +1,7 @@
+tool_id: code_exec
+name: 代码执行
+category: 执行
+description: 执行 Python/Node.js 等代码片段，用于验证算法、数据分析、原型测试
+
+risk: medium
+universal: false

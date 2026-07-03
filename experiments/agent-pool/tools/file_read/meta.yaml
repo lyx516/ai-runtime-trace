@@ -1,0 +1,7 @@
+tool_id: file_read
+name: 读取文件
+category: 文件
+description: 读取项目中的文件内容（支持按行号和分页）
+
+risk: low
+universal: false

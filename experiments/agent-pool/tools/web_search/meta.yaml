@@ -1,0 +1,7 @@
+tool_id: web_search
+name: 网络搜索
+category: 信息
+description: 搜索互联网获取实时信息、技术文档、论文引用等
+
+risk: low
+universal: false

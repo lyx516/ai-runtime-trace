@@ -1,0 +1,7 @@
+tool_id: data_analyze
+name: 数据分析
+category: 分析
+description: 使用 pandas/numpy/matplotlib 等库进行数据分析和可视化
+
+risk: low
+universal: false

@@ -1,0 +1,7 @@
+tool_id: search_files
+name: 文件搜索
+category: 文件
+description: 按内容或文件名搜索项目中的文件（类似 grep/find）
+
+risk: low
+universal: false

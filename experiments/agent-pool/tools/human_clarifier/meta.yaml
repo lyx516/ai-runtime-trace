@@ -1,0 +1,8 @@
+tool_id: human_clarifier
+name: 人类澄清
+category: 协作
+description: "【有限次数·全局3次】向人类用户提问，获取无法由AI自行判断的上下文信息。所有agent共享3次总上限。"
+
+risk: low
+universal: false
+max_global_uses: 3

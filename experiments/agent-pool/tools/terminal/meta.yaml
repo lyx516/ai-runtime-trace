@@ -1,0 +1,7 @@
+tool_id: terminal
+name: 终端执行
+category: 执行
+description: 在沙箱环境中执行任意 shell 命令，包括编译、运行脚本、构建等
+
+risk: medium
+universal: false
