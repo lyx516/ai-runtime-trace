@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Pool — Hermes Flow</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f1117;color:#e1e4e8;padding:24px}
+h1{font-size:20px;font-weight:600;margin-bottom:20px;color:#f0f6fc}
+.agent-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px}
+.card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;cursor:pointer}
+.card:hover{border-color:#58a6ff44}
+.card-header{display:flex;justify-content:space-between;margin-bottom:8px}
+.name{font-size:15px;font-weight:600;color:#f0f6fc}
+.role{font-size:11px;color:#8b949e;background:#21262d;padding:2px 8px;border-radius:10px}
+.desc{font-size:13px;color:#8b949e;margin-bottom:10px}
+.tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:10px;margin:2px 2px 0 0}
+.skill{background:#1f6feb33;color:#58a6ff;border:1px solid #1f6feb44}
+.tool{background:#daa52033;color:#d29922;border:1px solid #daa52044}
+.stat-bar{display:flex;gap:16px;margin-bottom:20px}
+.stat{border:1px solid #30363d;border-radius:6px;padding:10px 16px;background:#161b22}
+.num{font-size:22px;font-weight:600;color:#f0f6fc}
+.lbl{font-size:12px;color:#8b949e}
+</style></head><body>
+<h1>🧠 Agent Pool</h1>
+<div class="stat-bar" id="stats"></div>
+<div class="agent-grid" id="grid"></div>
+<script>
+async function load(){
+  const r=await(await fetch('/api/pool')).catch(()=>null);
+  if(!r) return document.getElementById('grid').innerHTML='<p style="color:#f85149">无法连接 Observer</p>';
+  const d=await r.json();
+  if(d.error) return document.getElementById('grid').innerHTML=`<p style="color:#f85149">${d.error}</p>`;
+  const a=d.agents||[];
+  const skills=new Set(a.flatMap(x=>x.assigned_skills||[])).size;
+  const tools=new Set(a.flatMap(x=>x.tools_allowed||[])).size;
+  document.getElementById('stats').innerHTML=
+    `<div class=stat><div class=num>${a.length}</div><div class=lbl>智能体</div></div>`+
+    `<div class=stat><div class=num>${skills}</div><div class=lbl>共享技能</div></div>`+
+    `<div class=stat><div class=num>${tools}</div><div class=lbl>可用工具</div></div>`;
+  document.getElementById('grid').innerHTML=a.map(x=>
+    `<div class=card onclick=this.classList.toggle('open')>`+
+      `<div class=card-header><span class=name>${x.display_name||x.agent_id}</span><span class=role>${x.role||''}</span></div>`+
+      `<div class=desc>${(x.description||'').slice(0,80)}</div>`+
+      `<div>${(x.assigned_skills||[]).map(s=>`<span class="tag skill">📘 ${s}</span>`).join('')}`+
+      `${(x.tools_allowed||[]).map(t=>`<span class="tag tool">🔧 ${t}</span>`).join('')}</div>`+
+    `</div>`
+  ).join('');
+}
+load();
+</script></body></html>

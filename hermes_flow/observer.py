@@ -310,6 +310,9 @@ class SSEHandler(http.server.BaseHTTPRequestHandler):
         if path == "/api/runs":
             return self._send_json(self._list_runs())
 
+        if path == "/api/pool":
+            return self._serve_pool_api()
+
         if path.startswith("/api/runs/"):
             parts = path.split("/")
             if len(parts) >= 4:
@@ -577,6 +580,34 @@ class SSEHandler(http.server.BaseHTTPRequestHandler):
             )
         except Exception as e:
             return [{"error": str(e)}]
+
+    def _serve_pool_api(self):
+        """Serve agent pool data from the project's agents/ directory."""
+        candidates = [
+            Path(__file__).resolve().parent.parent / "experiments" / "agent-pool",
+            Path(__file__).resolve().parent.parent / "experiments" / "agent-pool-plugin",
+            Path.home() / ".hermes" / "plugins" / "agent-pool",
+        ]
+        plugin_dir = None
+        for c in candidates:
+            if (c / "agents").exists():
+                plugin_dir = c
+                break
+        if not plugin_dir:
+            return self._send_json({"error": "Agent pool plugin not found"}, 404)
+        import yaml
+        agents_list = []
+        agents_dir = plugin_dir / "agents"
+        for d in sorted(agents_dir.iterdir()):
+            meta = d / "meta.yaml"
+            if not meta.exists():
+                continue
+            with open(meta) as f:
+                info = yaml.safe_load(f)
+                private_dir = d / "private"
+                info["private_skills"] = sorted(f.name for f in private_dir.iterdir() if f.suffix == ".md") if private_dir.exists() else []
+                agents_list.append(info)
+        return self._send_json({"agents": agents_list, "pool_id": "hermes-flow-agent-pool"})
 
     def _serve_dashboard_file(self, filename: str) -> None:
         """Serve a static file from the dashboard/ directory."""

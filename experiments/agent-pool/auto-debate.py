@@ -245,11 +245,28 @@ def generate_yaml(goal: str, agent_ids: list[str], run_name: str, agents: dict) 
     states, order = {}, []
     designers = [a for a, r in roles.items() if r == "designer"]
     critics = [a for a, r in roles.items() if r == "critic"]
+    speckit_writers = [a for a, r in roles.items() if r == "spec-writer"]
+    speckit_planners = [a for a, r in roles.items() if r == "plan-maker"]
+    speckit_breakers = [a for a, r in roles.items() if r == "task-breaker"]
+    speckit_implementers = [a for a, r in roles.items() if r in ("implementer",)]
+    speckit_reviewers = [a for a, r in roles.items() if r in ("code-reviewer", "reviewer")]
 
     # DESIGN
     if designers:
         sid = "DESIGN"
-        nxt = "CLARIFY" if has_clarifier and not has_critic else ("CRITIQUE" if has_critic else "DONE")
+        # Determine next state: debate chain, speckit chain, or DONE
+        if has_critic:
+            nxt = "CLARIFY" if has_clarifier and not has_critic else "CRITIQUE"
+        elif speckit_writers:
+            nxt = "SPEC"
+        elif speckit_planners:
+            nxt = "PLAN"
+        elif speckit_breakers:
+            nxt = "TASKS"
+        elif speckit_implementers:
+            nxt = "IMPLEMENT"
+        else:
+            nxt = "DONE"
         states[sid] = make_state(sid, goal, designers, self_gate(designers, nxt))
         order.append(sid)
 
@@ -279,11 +296,6 @@ def generate_yaml(goal: str, agent_ids: list[str], run_name: str, agents: dict) 
             order.append("FINAL_DECISION")
 
     # Speckit pipeline: SPEC → PLAN → TASKS → IMPLEMENT → REVIEW → DONE
-    speckit_writers = [a for a, r in roles.items() if r == "spec-writer"]
-    speckit_planners = [a for a, r in roles.items() if r == "plan-maker"]
-    speckit_breakers = [a for a, r in roles.items() if r == "task-breaker"]
-    speckit_implementers = [a for a, r in roles.items() if r in ("implementer",)]
-    speckit_reviewers = [a for a, r in roles.items() if r in ("code-reviewer", "reviewer")]
 
     if speckit_writers:
         next_s = "PLAN" if speckit_planners else ("TASKS" if speckit_breakers else "IMPLEMENT")
