@@ -379,6 +379,13 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
     if not result.get("ok"):
         print(f"❌ flow_init 失败: {result.get('error')}")
         print(f"   {result.get('details', [])}")
+        # Clean up empty database left by failed init
+        failed_run_id = result.get("run_id", "")
+        if failed_run_id:
+            failed_dir = Path(PROJECT_ROOT) / ".hermes-flow" / "runs" / failed_run_id
+            if failed_dir.exists():
+                import shutil
+                shutil.rmtree(failed_dir, ignore_errors=True)
         sys.exit(1)
 
     run_id = result["run_id"]

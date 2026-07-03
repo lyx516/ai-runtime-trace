@@ -24,5 +24,5 @@ skills/ 目录下的每个 .md 文件对应一个班底配置，包含：
 
 -----
 ## 团队搭配经验
-目标: 实现一个嵌入式 KV 存储引擎，支持：1) TTL 过期 2) WAL 预写日志持久化 3) LRU 缓存 4) 读写锁 | 团队: spec-writer, plan-maker, task-breaker, implementer, code-reviewer, tester | 效果: 本次仅使用了 spec-writer 一个 agent，适合快速产出规格，但缺乏后续实现和验证环节，团队搭配不完整。建议在复杂任务中启用全流程班底。
-Gate建议: 建议在 spec-writer 完成后增加一个 gate，检查规格是否包含接口签名、数据结构定义和边界条件，确保可实施性后再进入下一阶段。
+目标: 设计一套 kv cache 缓存系统，从零完整实现,使用 python，新建独立文件夹，要求极致性能 | 团队: spec-writer, plan-maker, task-breaker, implementer, code-reviewer, tester | 效果: spec→plan→task→implement→review→test的流水线模式高效可靠，适合复杂系统开发。
+Gate建议: 建议在implement和review之间增加性能基准测试gate，确保优化方向正确；在test后增加回归测试gate，防止性能退化。
