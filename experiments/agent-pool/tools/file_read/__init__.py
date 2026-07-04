@@ -10,8 +10,8 @@ def run(args: dict) -> dict:
     if not path:
         return {"ok": False, "error": "read_file: missing required field 'path'"}
 
-    from tools._scope import safe_path
-    full, err = safe_path(path)
+    from tools._scope import safe_read_path
+    full, err = safe_read_path(path)
     if err:
         return {"ok": False, "error": err}
 

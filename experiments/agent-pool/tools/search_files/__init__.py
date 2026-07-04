@@ -27,10 +27,10 @@ def run(args: dict) -> dict:
                      "Provide a regex pattern (content search) or glob pattern (file search).",
         }
 
-    from tools._scope import resolve_path
+    from tools._scope import resolve_read_path
 
     try:
-        root = resolve_path(path)
+        root = resolve_read_path(path)
     except PermissionError as e:
         return {"ok": False, "error": f"search_files: {e}"}
 

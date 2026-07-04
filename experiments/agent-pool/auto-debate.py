@@ -776,6 +776,10 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
     run_dir = Path(PROJECT_ROOT) / ".hermes-flow" / "runs" / run_id
     store = RuntimeStore(run_dir)
     store.init_schema()
+
+    # Load agent_specs for scope enforcement
+    _agent_specs = store.load_agent_specs(run_id)
+
     set_tracer(SqliteTracer(store, run_id=run_id))
     conn = store.connect()
 
@@ -847,6 +851,13 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
             from tool_registry import get_agent_tools_schemas
             tool_schemas = get_agent_tools_schemas(role_id)
             print(f"  🤖 {role_id} ({len(tool_schemas)} tools)")
+
+            # Set write/read scope env vars from agent_specs
+            _spec = _agent_specs.get(role_id, {})
+            _write_scope = _spec.get("write_scope", [])
+            _read_scope = _spec.get("read_scope", [])
+            os.environ["HERMES_WRITE_SCOPE"] = json.dumps(_write_scope)
+            os.environ["HERMES_READ_SCOPE"] = json.dumps(_read_scope)
 
             # Run multi-turn session: think → tool → feedback → think → ... → decision
             result = _run_agent_session(

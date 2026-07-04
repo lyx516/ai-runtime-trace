@@ -77,7 +77,7 @@ def run(args: dict) -> dict:
 
 def _resolve_path(path: str) -> Path:
     """Resolve a file path within workspace scope."""
-    from tools._scope import resolve_path as scope_resolve
+    from tools._scope import resolve_write_path as scope_resolve
     return scope_resolve(path)
 
 
