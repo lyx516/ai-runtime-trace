@@ -535,6 +535,24 @@ def _run_agent_session(
         print(f"     🤔 round {turn+1}/{max_turns}...", end="", flush=True)
 
         t0 = time.time()
+
+        # Persist LLM input snapshot for observability
+        if store is not None:
+            try:
+                store.append_llm_input_snapshot(
+                    run_id=run_id,
+                    session_id=role_id,
+                    role_id=role_id,
+                    state_id=state_id,
+                    provider="deepseek",
+                    model="deepseek-v4-flash",
+                    messages=[{"role": "system", "content": system}] + messages,
+                    request={"tools": [t["function"]["name"] for t in tools]},
+                    context_packet={"turn": turn, "max_turns": max_turns},
+                )
+            except Exception:
+                pass
+
         try:
             resp_data = _call_llm_tools(system, messages, tools)
             dt = time.time() - t0
