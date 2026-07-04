@@ -270,12 +270,16 @@ def generate_yaml(goal: str, agent_ids: list[str], run_name: str, agents: dict,
             "memory_mode": "run_isolated", "read_scope": [],
             "write_scope": [f"experiments/agent-pool/output/{flow_id}/"],
         }
-
     states, order = {}, []
-
     # If no topology provided, build one from selected roles (backward compat)
     if not flow_topology:
         flow_topology = []
+    # Build a map of original topology state IDs → their ordinal position
+    _topo_order_map: dict[str, int] = {}
+    for _i, _s in enumerate(flow_topology):
+        _topo_order_map[_s["state"]] = _i
+    # Collect all state IDs in the ORIGINAL topology (before filtering)
+    _all_topo_ids = [_s["state"] for _s in flow_topology]
     # Filter topology to only include states where all actors are in agent_ids
     for step in flow_topology:
         sid = step["state"]
@@ -310,6 +314,27 @@ def generate_yaml(goal: str, agent_ids: list[str], run_name: str, agents: dict,
             states[tid] = {"terminal": True, "actors": []}
         if tid not in order:
             order.append(tid)
+
+    # ── Rewrite gate targets for removed states ──
+    _existing_ids = set(order)
+    for sid in order:
+        s = states.get(sid, {})
+        gate = s.get("gate")
+        if not isinstance(gate, dict):
+            continue
+        for _key in ("on_pass", "on_fail"):
+            target = gate.get(_key)
+            if not target or target in _existing_ids:
+                continue
+            # Target state was removed from topology — walk forward to next existing state
+            _pos = _topo_order_map.get(sid, -1)
+            _fallback = "DONE" if _key == "on_pass" else "ABORT"
+            _next = _fallback
+            for _i in range(_pos + 1, len(_all_topo_ids)):
+                if _all_topo_ids[_i] in _existing_ids:
+                    _next = _all_topo_ids[_i]
+                    break
+            gate[_key] = _next
 
     yaml_data["initial_state_id"] = order[0] if order else "DONE"
     yaml_data["states"] = {s: states[s] for s in order}
