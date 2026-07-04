@@ -251,12 +251,16 @@ def make_state(sid, desc, actors, gate=None, output_artifacts=None):
 
 
 def generate_yaml(goal: str, agent_ids: list[str], run_name: str, agents: dict,
-                  flow_topology: Optional[list] = None) -> Path:
+                  flow_topology: Optional[list] = None,
+                  output_base: str = "") -> Path:
     """Generate flow YAML from a topology config. No role-specific hardcoding."""
     selected = {aid: agents[aid] for aid in agent_ids}
     import yaml as yaml_lib
 
     flow_id = f"auto-{uuid.uuid4().hex[:8]}"
+
+    # Resolve output_base (may contain {flow_id} template)
+    _resolved_output = output_base.replace("{flow_id}", flow_id) if output_base else f"output/{flow_id}"
 
     yaml_data = {
         "flow_id": flow_id, "name": run_name, "version": 1,
@@ -268,7 +272,7 @@ def generate_yaml(goal: str, agent_ids: list[str], run_name: str, agents: dict,
             "profile_name": f"pool-{aid}", "soul": info.get("soul", ""),
             "skills": info.get("skills", []), "toolsets": info.get("toolsets", []),
             "memory_mode": "run_isolated", "read_scope": [],
-            "write_scope": [f"experiments/agent-pool/output/{flow_id}/"],
+            "write_scope": [_resolved_output + "/"],
         }
     states, order = {}, []
     # If no topology provided, build one from selected roles (backward compat)
@@ -442,6 +446,8 @@ def _run_agent_session(
     history: list, inbox: list, gate: dict, tool_schemas: list[dict],
     agents: dict, output_artifacts: list[str] = None,
     prev_artifacts: dict = None,
+    store=None,
+    run_id: str = "",
 ) -> dict:
     """Multi-turn agent session: think → tool → feedback → think → ... → decision.
 
@@ -585,6 +591,20 @@ def _run_agent_session(
                 ok = result.get("ok", False)
                 print(f" {'✅' if ok else '❌'}")
 
+                # Persist thinking event
+                if store is not None:
+                    try:
+                        store.append_thinking_event(
+                            run_id=run_id,
+                            role_id=role_id,
+                            state_id=state_id,
+                            step_type=fn_name,
+                            inputs=fn_args,
+                            output=result,
+                        )
+                    except Exception:
+                        pass
+
                 formatted = format_tool_results_for_llm(fn_name, result)
                 tool_msgs.append({
                     "role": "tool",
@@ -690,12 +710,27 @@ def _call_llm_tools(
             "Authorization": f"Bearer {api_key}",
         },
     )
-    try:
-        resp = urllib.request.urlopen(req, timeout=120)
-    except urllib.error.HTTPError as e:
-        err_body = e.read().decode("utf-8", "replace")[:500]
-        raise RuntimeError(f"DeepSeek API {e.code}: {err_body}") from e
-    result = json.loads(resp.read())
+    # ── Retry loop for transient network errors ──
+    _max_retries = 2
+    _last_err = None
+    for _attempt in range(_max_retries + 1):
+        try:
+            resp = urllib.request.urlopen(req, timeout=120)
+            result = json.loads(resp.read())
+            break
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8", "replace")[:500]
+            raise RuntimeError(f"DeepSeek API {e.code}: {err_body}") from e
+        except (IOError, ConnectionError, urllib.error.URLError) as e:
+            _last_err = e
+            if _attempt < _max_retries:
+                _delay = [2, 5][_attempt]
+                print(f"     ⚠️ LLM retry {_attempt+1}/{_max_retries}: {type(e).__name__} — waiting {_delay}s")
+                time.sleep(_delay)
+                continue
+            raise
+    else:
+        raise _last_err or RuntimeError("LLM call failed after retries")
 
     choice = result["choices"][0]["message"]
     text_content = choice.get("content", "") or ""
@@ -714,10 +749,10 @@ def _call_llm_tools(
     return {"content": text_content, "tool_calls": tool_calls}
 
 
-def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, agents: dict):
+def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, agents: dict, output_dir: str = ""):
     """Flow engine: drive Hermes Flow state machine until completion. Not manager's job."""
     os.environ["HERMES_FLOW_PROJECT_ROOT"] = PROJECT_ROOT
-    os.environ["HERMES_WORKSPACE_ROOT"] = PROJECT_ROOT
+    os.environ["HERMES_WORKSPACE_ROOT"] = str(Path(PROJECT_ROOT) / output_dir) if output_dir else PROJECT_ROOT
 
     from hermes_flow.tools import flow_init, flow_step, flow_send, flow_decide
     from hermes_flow.storage import RuntimeStore
@@ -819,6 +854,8 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
                 all_msgs, inbox_rows, gate, tool_schemas, agents,
                 output_artifacts=state_dict.get("output_artifacts", []),
                 prev_artifacts=found_artifacts if found_artifacts else None,
+                store=store,
+                run_id=run_id,
             )
 
             val = result.get("value", "APPROVE").upper()
@@ -1062,9 +1099,11 @@ def main():
     if best_match and best_overlap >= max(2, len(selected_set) * 0.6):
         skill_file, fm = best_match
         flow_topology = fm.get("flow", [])
+        output_base = fm.get("output_base", "")
         print(f"  采用班底: {fm.get('name', skill_file.stem)} ({len(flow_topology)} 个状态, 匹配度 {best_overlap}/{len(selected_set)})")
     else:
         print(f"  ⚠️ 未找到匹配班底 (最佳: {best_overlap}/{len(selected_set)})")
+        output_base = ""
     if not flow_topology:
         if len(agent_ids) == 1:
             # Single agent: one DONE state, no gate
@@ -1080,7 +1119,7 @@ def main():
 
     # Phase 2: Manager generates flow YAML + briefs agents
     print("\n📄 生成 Flow YAML...")
-    yaml_path = generate_yaml(goal, agent_ids, run_name, agents, flow_topology)
+    yaml_path = generate_yaml(goal, agent_ids, run_name, agents, flow_topology, output_base)
     print(f"   → {yaml_path}")
 
     # Manager briefs each agent via inbox
@@ -1115,7 +1154,10 @@ def main():
         print(f"  ✅ {aid}: 已收到任务简报")
 
     # Phase 3: Flow engine runs (NOT manager)
-    run_flow(goal, agent_ids, yaml_path, run_name, agents)
+    # Resolve output directory from YAML path (flow_id is in filename)
+    _flow_id = yaml_path.stem
+    _resolved_output = output_base.replace("{flow_id}", _flow_id) if output_base else f"output/{_flow_id}"
+    run_flow(goal, agent_ids, yaml_path, run_name, agents, _resolved_output)
 
     # Phase 4: Manager records decision pattern for future reference
     pattern = f"## 团队搭配经验\n目标: {goal[:80]} | 团队: {', '.join(agent_ids)} | 班底: 自动决策"

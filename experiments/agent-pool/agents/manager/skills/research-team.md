@@ -1,6 +1,7 @@
 ---
 name: 调研班底
 description: 资料调研、数据分析、输出报告
+output_base: "output/{flow_id}"
 agents:
 - researcher
 - analyst

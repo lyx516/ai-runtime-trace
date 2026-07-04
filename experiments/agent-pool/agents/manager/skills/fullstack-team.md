@@ -1,6 +1,7 @@
 ---
 name: 全栈班底
 description: 辩论→实现→测试→文档的完整流程
+output_base: "output/{flow_id}"
 agents:
 - designer
 - critic

@@ -1,6 +1,7 @@
 ---
 name: 辩论班底
 description: 方案推演、技术选型辩论、架构评审
+output_base: "output/{flow_id}"
 agents:
 - designer
 - critic

@@ -3,11 +3,10 @@
 
 Usage:
     debate <task description>
-    debate "实现一个向量数据库，索引性能为先"
+    debate --workdir /tmp/my-project "实现一个向量数据库，索引性能为先"
 
-Uses the repository root as the default project root so runs are visible in
-the bundled dashboard even when `debate` is invoked from another directory.
-Set HERMES_FLOW_PROJECT_ROOT to override.
+Uses the repository root as the default project root.
+Set --workdir to override, or set HERMES_FLOW_PROJECT_ROOT env var.
 """
 
 import os
@@ -21,7 +20,29 @@ def resolve_project_root() -> str:
 
 
 def main():
-    project_root = resolve_project_root()
+    # ── Parse --workdir from argv before delegating ──
+    workdir = ""
+    remaining = []
+    i = 1
+    while i < len(sys.argv):
+        if sys.argv[i] == "--workdir" and i + 1 < len(sys.argv):
+            workdir = sys.argv[i + 1]
+            i += 2
+        elif sys.argv[i].startswith("--workdir="):
+            workdir = sys.argv[i].split("=", 1)[1]
+            i += 1
+        else:
+            remaining.append(sys.argv[i])
+            i += 1
+
+    if workdir:
+        workdir = str(Path(workdir).resolve())
+        project_root = workdir
+        os.makedirs(workdir, exist_ok=True)
+    else:
+        project_root = resolve_project_root()
+
+    sys.argv = [sys.argv[0]] + remaining
 
     # Locate the agent-pool package relative to this file
     pkg_dir = Path(__file__).resolve().parent.parent / "experiments" / "agent-pool"

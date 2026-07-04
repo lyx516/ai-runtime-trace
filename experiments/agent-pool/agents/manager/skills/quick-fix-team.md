@@ -1,6 +1,7 @@
 ---
 name: 快捷修复班底
 description: 简单任务的快速实现+测试，不走辩论
+output_base: "output/{flow_id}"
 agents:
 - implementer
 - tester

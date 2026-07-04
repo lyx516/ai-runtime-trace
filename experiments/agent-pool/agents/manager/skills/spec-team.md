@@ -1,6 +1,7 @@
 ---
 name: 规格流水线班底
 description: 从需求到规格→方案→任务→实现→审查的完整开发流程
+output_base: "output/{flow_id}"
 agents:
 - spec-writer
 - plan-maker
@@ -45,10 +46,13 @@ flow:
   description: 编写实现代码
   actors: implementer
   gate:
-    type: decision
+    type: product
+    file: implementation-report.md
     pass: REVIEW
     fail: IMPLEMENT
     max: 4
+  output_artifacts:
+  - implementation-report.md
 - state: REVIEW
   description: 审查代码 vs spec
   actors: code-reviewer
