@@ -1,9 +1,9 @@
-"""文件修补工具 — 支持 create / replace / patch / verified 四种模式。
+"""文件修补工具 — replace / patch 两种模式。
 
-create   — 创建新文件（文件已存在则报错）
 replace  — 精确查找替换（必须匹配到目标）
 patch    — V4A 多文件批量补丁（支持 Add / Update / Delete File）
-verified — 带行号锚点的安全替换（合并冲突检测）
+
+文件创建请使用 terminal 工具: echo "content" > path/to/file.md
 """
 
 import os
@@ -14,35 +14,24 @@ from pathlib import Path
 def run(args: dict) -> dict:
     mode = args.get("mode", "replace")
     path = args.get("path", "")
-    content = args.get("content", "")
     old_string = args.get("old_string", "")
     new_string = args.get("new_string", "")
     replace_all = args.get("replace_all", False)
     patch_content = args.get("patch", "")
 
     # ── Empty-arg fast-fail ──
-    if mode == "create":
-        if not path:
-            return {
-                "ok": False,
-                "error": "patch: missing required field 'path' for mode='create'. "
-                         "Provide 'path' (file path) and 'content' (file contents).",
-            }
-        if not content:
-            return {
-                "ok": False,
-                "error": "patch: missing required field 'content' for mode='create'. "
-                         "The 'content' field must contain the full file content to write. "
-                         "Do not retry this call with empty content.",
-            }
-    elif mode == "replace":
+    if mode == "replace":
         if not old_string and not path:
             return {
                 "ok": False,
                 "error": "patch: old_string and path are both empty. "
-                         "Provide both 'path' and 'old_string' to perform a replacement. "
+                         "Provide 'path' (relative file path) and 'old_string' (text to find). "
                          "Do not retry this call with empty arguments.",
             }
+        if not path:
+            return {"ok": False, "error": "patch(replace): missing required field 'path'"}
+        if not old_string:
+            return {"ok": False, "error": "patch(replace): missing required field 'old_string'"}
     elif mode in ("patch", "verified"):
         if not patch_content:
             return {
@@ -54,9 +43,7 @@ def run(args: dict) -> dict:
 
     # ── Dispatch ──
     try:
-        if mode == "create":
-            return _mode_create(path, content)
-        elif mode == "replace":
+        if mode == "replace":
             return _mode_replace(path, old_string, new_string, replace_all)
         elif mode == "patch":
             return _mode_v4a(patch_content)
@@ -65,7 +52,7 @@ def run(args: dict) -> dict:
         else:
             return {
                 "ok": False,
-                "error": f"Unknown mode: {mode}. Supported: create, replace, patch, verified",
+                "error": f"Unknown mode: {mode}. Supported: replace, patch",
             }
     except PermissionError as e:
         return {"ok": False, "error": str(e)}
@@ -118,44 +105,8 @@ def _check_lint(path: Path, content: str):
 
 # ── Mode implementations ──
 
-def _mode_create(path: str, content: str) -> dict:
-    """Create a new file. Fails if the file already exists."""
-    full_path = _resolve_path(path)
-
-    if full_path.exists():
-        return {
-            "ok": False,
-            "error": f"patch(create): file already exists — '{path}'. "
-                     "Use mode='replace' to edit existing files, or choose a different path.",
-        }
-
-    try:
-        full_path.parent.mkdir(parents=True, exist_ok=True)
-        full_path.write_text(content, encoding="utf-8")
-    except PermissionError as e:
-        return {"ok": False, "error": f"patch(create): permission denied — {e}"}
-    except OSError as e:
-        return {"ok": False, "error": f"patch(create): cannot write — {e}"}
-
-    lint_result = _check_lint(full_path, content)
-
-    return {
-        "ok": True,
-        "diff": f"Created file: {path}",
-        "files_modified": [str(full_path)],
-        "match_count": 1,
-        "strategy": "create",
-        "lint": lint_result,
-    }
-
-
 def _mode_replace(path: str, old_string: str, new_string: str, replace_all: bool) -> dict:
     """Replace mode: find unique string and replace it."""
-    if not path:
-        return {"ok": False, "error": "patch(replace): missing required field 'path'"}
-    if not old_string:
-        return {"ok": False, "error": "patch(replace): missing required field 'old_string'"}
-
     full_path = _resolve_path(path)
     content, err = _read_file(full_path)
     if err:
@@ -385,10 +336,15 @@ def _mode_verified(patch_content: str) -> dict:
     if not patch_content:
         return {"ok": False, "error": "patch(verified): missing required field 'patch'"}
 
-    from tools.verified_patch_core import (
-        VerifiedPatchError, VerifiedOperation, apply_operations,
-    )
-    from tools import fuzzy_match
+    try:
+        from tools.verified_patch_core import (
+            VerifiedPatchError, VerifiedOperation, apply_operations,
+        )
+    except (ImportError, ModuleNotFoundError):
+        return {
+            "ok": False,
+            "error": "patch(verified): verified patch support not available. Use mode='replace' instead.",
+        }
 
     operations = _parse_v4a(patch_content)
     if not operations:

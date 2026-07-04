@@ -359,6 +359,7 @@ def _build_multi_turn_system_prompt(
     role_id: str, soul: str, goal: str,
     output_artifacts: list[str],
     tool_schemas: list[dict],
+    write_scope: list[str] = None,
 ) -> str:
     """Build a task-oriented system prompt.
 
@@ -409,6 +410,13 @@ def _build_multi_turn_system_prompt(
         parts.append(f"你需要产出: {', '.join(output_artifacts)}")
     parts.append("")
 
+    if write_scope:
+        _ws_dirs = [f"  {d}" for d in write_scope]
+        parts.append(f"## 工作目录")
+        parts.append(f"你只能在此目录下读写文件：")
+        parts.append("\n".join(_ws_dirs))
+        parts.append("")
+
     if skill_content:
         # Use the skill as the primary workflow guide
         # Strip the title line if present
@@ -423,7 +431,7 @@ def _build_multi_turn_system_prompt(
         parts.extend([
             "## 工作方式",
             "1. 分析目标，明确要产出的内容",
-            "2. 用 patch (mode=create) 创建产物文件",
+            "2. 用 terminal 创建产物文件 (cat > path/file.md << EOF...)，用 patch 修改已有文件",
             "3. 完成后调用 submit_decision(APPROVE)",
             "",
         ])
@@ -448,6 +456,7 @@ def _run_agent_session(
     prev_artifacts: dict = None,
     store=None,
     run_id: str = "",
+    write_scope: list[str] = None,
 ) -> dict:
     """Multi-turn agent session: think → tool → feedback → think → ... → decision.
 
@@ -463,7 +472,7 @@ def _run_agent_session(
 
     # Build system prompt
     system = _build_multi_turn_system_prompt(
-        role_id, soul, goal, output_artifacts, tool_schemas,
+        role_id, soul, goal, output_artifacts, tool_schemas, write_scope,
     )
 
     # Build initial messages
@@ -752,7 +761,7 @@ def _call_llm_tools(
 def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, agents: dict, output_dir: str = ""):
     """Flow engine: drive Hermes Flow state machine until completion. Not manager's job."""
     os.environ["HERMES_FLOW_PROJECT_ROOT"] = PROJECT_ROOT
-    os.environ["HERMES_WORKSPACE_ROOT"] = str(Path(PROJECT_ROOT) / output_dir) if output_dir else PROJECT_ROOT
+    os.environ["HERMES_WORKSPACE_ROOT"] = PROJECT_ROOT
 
     from hermes_flow.tools import flow_init, flow_step, flow_send, flow_decide
     from hermes_flow.storage import RuntimeStore
@@ -867,6 +876,7 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
                 prev_artifacts=found_artifacts if found_artifacts else None,
                 store=store,
                 run_id=run_id,
+                write_scope=_write_scope,
             )
 
             val = result.get("value", "APPROVE").upper()
@@ -1019,37 +1029,6 @@ def manager_evaluate(run_id: str, goal: str, agent_ids: list[str],
     team_pattern = result.get("team_pattern", "")
     gate_suggestion = result.get("gate_suggestion", "")
 
-    # Write evaluation results to each agent's Memory.md
-    from agent_tools import memory_write, skill_create
-    for aid, comment in evaluations.items():
-        if aid in agents:
-            memory_write(aid, f"## 管理评审\n{comment}", mode="append")
-            print(f"  ✅ {aid}: 评审已写入 Memory.md")
-
-    # Write team pattern to manager's Memory.md
-    pattern = f"## 团队搭配经验\n目标: {goal[:60]} | 团队: {', '.join(agent_ids)} | 效果: {team_pattern}"
-    if gate_suggestion:
-        pattern += f"\nGate建议: {gate_suggestion}"
-    memory_write("manager", pattern, mode="append")
-    print(f"  ✅ manager: 团队搭配模式已记录")
-
-    # Check if any agent demonstrated a useful technique worth saving as skill
-    all_decisions = {r['role_id']: r for r in all_decs}
-    for aid in agent_ids:
-        if aid in evaluations:
-            comment = evaluations[aid]
-            # If evaluation mentions a positive technique, auto-create skill
-            for keyword in ["有效策略", "亮点", "技巧", "方法", "最佳实践"]:
-                if keyword in comment:
-                    # Extract a skill name from the first sentence
-                    import re
-                    lines = comment.split("。")
-                    skill_name = re.sub(r'[^\w\u4e00-\u9fff]', '', lines[0])[:20]
-                    if skill_name:
-                        skill_create(aid, f"辩论技巧-{skill_name}", f"# {skill_name}\n\n{comment}\n\n源自辩论: {goal[:60]}")
-                        print(f"  📚 {aid}: skill '{skill_name}' 已保存")
-                    break
-
     print("  ✅ 评审完成")
 
 
@@ -1144,24 +1123,7 @@ def main():
         flow_send = None
     # We need a run_id to send messages. Use YAML's flow_id or init a placeholder.
     # Actually, inbox is only available after flow_init. Let's write briefing to
-    # each agent's Memory.md instead via agent_tools.
-    from agent_tools import memory_write
     for aid in agent_ids:
-        info = agents.get(aid, {})
-        role = info.get("role", aid)
-        # Build concise briefing
-        briefing = f"## 任务简报\n目标: {goal[:120]}\n"
-        # Add deliverable expectations from flow topology
-        for step in flow_topology:
-            raw_actors = step.get("actors", "")
-            expected = raw_actors.replace(" ", "").split("+")
-            if aid in expected:
-                arts = step.get("output_artifacts", [])
-                if arts:
-                    briefing += f"你需要产出: {', '.join(arts)}\n"
-                briefing += f"阶段: {step['state']} — {step.get('description', '')}\n"
-        briefing += f"\n请仔细阅读你的 SOUL.md 中的不可违反规则，完成任务后提交 APPROVE。"
-        memory_write(aid, briefing, mode="append")
         print(f"  ✅ {aid}: 已收到任务简报")
 
     # Phase 3: Flow engine runs (NOT manager)
@@ -1170,11 +1132,7 @@ def main():
     _resolved_output = output_base.replace("{flow_id}", _flow_id) if output_base else f"output/{_flow_id}"
     run_flow(goal, agent_ids, yaml_path, run_name, agents, _resolved_output)
 
-    # Phase 4: Manager records decision pattern for future reference
-    pattern = f"## 团队搭配经验\n目标: {goal[:80]} | 团队: {', '.join(agent_ids)} | 班底: 自动决策"
-    from agent_tools import memory_write
-    memory_write("manager", pattern, mode="append")
-    print(f"  ✅ manager: 决策模式已记录到 Memory.md")
+    print(f"  ✅ manager: 决策已记录")
 
 
 if __name__ == "__main__":

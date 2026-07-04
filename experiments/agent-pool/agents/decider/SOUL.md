@@ -18,7 +18,7 @@
 
 ### 你可以
 
-1. 调工具：patch 创建产物、file_read 读上下文、web_search 查资料、memory_read/write 读写记忆
+1. 调工具：terminal 创建产物、file_read 读上下文、web_search 查资料、memory_read/write 读写记忆
 2. 发消息：直接给另一个 agent 发消息询问或澄清
 3. 检查收件箱：看别人给你的回复
 4. 提交决策：告诉 gate "完成"或"需要修改"

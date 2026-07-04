@@ -204,10 +204,60 @@ def _generate_parameter_schema(run_fn) -> dict:
     return result
 
 
+
+def _patch_tool_schema() -> dict:
+    """Hand-crafted schema for patch tool — simpler without create mode."""
+    return {
+        "type": "function",
+        "function": {
+            "name": "patch",
+            "description": (
+                "Edit existing files. "
+                "mode='replace': find old_string and replace with new_string in a file. Requires path, old_string, new_string. "
+                "mode='patch': V4A multi-file batch edit. Requires patch (multi-file patch text). "
+                "To CREATE a new file, use the terminal tool: terminal(command='cat > path/file.md << '\''EOF'\''\\ncontent\\nEOF')"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["replace", "patch", "verified"],
+                        "description": "replace (edit a file) or patch (V4A multi-file batch) or verified (safe anchored edit)"
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "File path relative to workspace. Required for replace mode."
+                    },
+                    "old_string": {
+                        "type": "string",
+                        "description": "Text to find. Required for replace mode."
+                    },
+                    "new_string": {
+                        "type": "string",
+                        "description": "Replacement text. Required for replace mode."
+                    },
+                    "patch": {
+                        "type": "string",
+                        "description": "V4A patch content. Required for patch/verified mode."
+                    },
+                    "replace_all": {
+                        "type": "boolean",
+                        "description": "Replace all occurrences. Default: false."
+                    }
+                },
+                "required": ["mode"]
+            }
+        }
+    }
+
 def build_tool_schema(tool_id: str, tool_info: dict) -> dict:
     """Build a single OpenAI-compatible tool schema entry."""
     run_fn = tool_info["run_fn"]
     doc = tool_info["doc"]
+
+    if tool_id == "patch":
+        return _patch_tool_schema()
 
     parameters = _generate_parameter_schema(run_fn)
 
@@ -280,12 +330,30 @@ def get_agent_tools_schemas(agent_id: str) -> list[dict]:
 
 
 def execute_tool(tool_id: str, args: dict, agent_id: str = "") -> dict:
-    """Execute a tool by ID via tools_runner or direct import.
+    """Execute a tool by ID. Loads tools/<id>/__init__.py dynamically."""
+    import importlib.util
+    from pathlib import Path
 
-    Uses the existing tools_runner for permission checking and execution.
-    """
-    from tools_runner import execute as runner_execute
-    return runner_execute(agent_id, tool_id, args)
+    tools_dir = Path(__file__).resolve().parent / "tools"
+    mod_path = tools_dir / tool_id / "__init__.py"
+
+    if not mod_path.exists():
+        return {"ok": False, "error": f"Tool '{tool_id}' not found", "tool": tool_id}
+
+    try:
+        spec = importlib.util.spec_from_file_location(f"tools_{tool_id}", str(mod_path))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        run_fn = getattr(mod, "run", None)
+        if run_fn is None:
+            return {"ok": False, "error": f"Tool '{tool_id}' has no run()", "tool": tool_id}
+        result = run_fn(args)
+        if not isinstance(result, dict):
+            result = {"ok": True, "output": str(result)}
+        result["tool"] = tool_id
+        return result
+    except Exception as e:
+        return {"ok": False, "error": str(e), "tool": tool_id}
 
 
 def format_tool_results_for_llm(tool_id: str, result: dict) -> str:

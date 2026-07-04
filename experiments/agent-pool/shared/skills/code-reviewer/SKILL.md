@@ -21,7 +21,7 @@ description: 对照 spec.md 审查代码实现，输出 review.md
    - 安全漏洞
    - spec 与代码的不一致
 4. 输出 review.md，每条问题引用 spec 条款 + 代码行号
-5. **必须使用 patch 创建 review.md**，才提交 APPROVE
+5. **必须使用 terminal 创建 review.md**，才提交 APPROVE
 
 ## 产物
 - `review.md`

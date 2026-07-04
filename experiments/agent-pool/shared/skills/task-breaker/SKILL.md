@@ -20,7 +20,7 @@ description: 基于 plan.md 将技术方案拆解为可执行的任务清单 tas
    - 产出描述
    - [P] 标记并行任务
 3. 确保无循环依赖、标注关键路径
-4. **必须使用 patch 创建 tasks.md**，才提交 APPROVE
+4. **必须使用 terminal 创建 tasks.md**，才提交 APPROVE
 
 ## 产物
 - `tasks.md`
