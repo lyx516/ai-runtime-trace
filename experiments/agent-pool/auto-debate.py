@@ -591,8 +591,47 @@ def _run_agent_session(
                 raw_args = tc.get("function", {}).get("arguments", "{}")
                 try:
                     fn_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-                except json.JSONDecodeError:
-                    fn_args = {}
+                except (json.JSONDecodeError, TypeError) as e:
+                    # Truncated or malformed JSON — report to LLM so it can continue from where it stopped
+                    preview = str(raw_args)[:800]
+                    tool_msgs.append({
+                        "role": "tool",
+                        "tool_call_id": tc.get("id", fn_name),
+                        "content": (
+                            f"[Error] Tool call arguments for '{fn_name}' are malformed or truncated JSON "
+                            f"(likely hit max_tokens limit). Raw arguments received:\n\n"
+                            f"{preview}\n\n"
+                            f"Please retry. If you were writing a large file, consider writing it in "
+                            f"smaller chunks — write a skeleton first, then use patch to add sections."
+                        ),
+                    })
+                    tool_calls_made += 1
+                    # Track empty-fail for loop detection
+                    _empty_fails = _empty_fails + 1
+                    _last_empty_tool = fn_name
+                    continue
+
+                # Empty-arg detection: if fn_args is empty dict (not truncated, just empty)
+                if not fn_args:
+                    _required_params = json.dumps({
+                        f["function"]["name"]: f["function"].get("parameters", {}).get("required", [])
+                        for f in tools
+                        if f.get("function", {}).get("name") == fn_name
+                    }, ensure_ascii=False)
+                    tool_msgs.append({
+                        "role": "tool",
+                        "tool_call_id": tc.get("id", fn_name),
+                        "content": (
+                            f"[Error] '{fn_name}' called with empty arguments ({{}}). "
+                            f"Required parameters: {_required_params}. "
+                            f"Please retry with the correct arguments."
+                        ),
+                    })
+                    tool_calls_made += 1
+                    _empty_fails = _empty_fails + 1
+                    _last_empty_tool = fn_name
+                    print(f" 🔧 {fn_name}({{}})" + " ❌")
+                    continue
 
                 # Check if decision
                 if fn_name == "submit_decision":
@@ -643,17 +682,13 @@ def _run_agent_session(
                 if not ok and not any(fn_args.values()):
                     _empty_fails = _empty_fails + 1
                     _last_empty_tool = fn_name
-                    if _empty_fails >= 2 and _last_empty_tool == fn_name:
-                        tool_msgs.append({
-                            "role": "user",
-                            "content": (
-                                f"⚠️  You have called '{fn_name}' with empty arguments "
-                                f"{_empty_fails} times and it failed each time. "
-                                f"Stop retrying this call. Proceed with submit_decision "
-                                f"or try a different approach."
-                            ),
-                        })
-                        _empty_fails = 0
+                    if _empty_fails >= 3 and _last_empty_tool == fn_name:
+                        print(f"     🛑 repeated empty {fn_name} args; returning REQUEST_CHANGES")
+                        return {
+                            "value": "REQUEST_CHANGES",
+                            "reason": f"{fn_name} called with empty arguments {_empty_fails} times",
+                            "tool_calls": tool_calls_made,
+                        }
                 else:
                     _empty_fails = 0
 
@@ -719,7 +754,7 @@ def _call_llm_tools(
         "model": model,
         "messages": [{"role": "system", "content": system}] + messages,
         "temperature": 0.7,
-        "max_tokens": max(300, min(4000, 32000 - total_chars // 4)),
+        "max_tokens": max(300, min(8192, 32000 - total_chars // 4)),
     }
 
     # Only send tools if we have any
@@ -776,12 +811,58 @@ def _call_llm_tools(
     return {"content": text_content, "tool_calls": tool_calls}
 
 
+def _artifact_check(path: Path) -> tuple[bool, str]:
+    """Return whether an output artifact is substantive enough to pass a product gate."""
+    if not path.exists() or not path.is_file():
+        return False, "missing"
+    size = path.stat().st_size
+    if size == 0:
+        return False, "empty"
+    if path.suffix.lower() in {".md", ".txt", ".rst"}:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        non_empty_lines = [line for line in text.splitlines() if line.strip()]
+        if size < 200 or len(non_empty_lines) < 3:
+            return False, f"stub-like ({size} bytes, {len(non_empty_lines)} non-empty lines)"
+    return True, "ok"
+
+
+def _find_output_artifact(project_root: str, art_name: str, write_scope: list[str]) -> tuple[Path | None, str]:
+    """Find an artifact only inside the current run's declared write scope.
+
+    Broad recursive search can pick stale files from older auto-* runs and pass
+    the wrong artifact path to the next state.
+    """
+    root = Path(project_root)
+    artifact = Path(art_name)
+    candidates: list[Path] = []
+    if artifact.is_absolute():
+        candidates.append(artifact)
+    else:
+        for scope in write_scope or []:
+            candidates.append(root / scope / artifact.name)
+        candidates.append(root / artifact)
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve() if candidate.exists() else candidate
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        ok, reason = _artifact_check(candidate)
+        if ok:
+            return candidate, reason
+        if candidate.exists():
+            return None, f"{candidate}: {reason}"
+    return None, "missing in current write scope"
+
+
 def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, agents: dict, output_dir: str = ""):
     """Flow engine: drive Hermes Flow state machine until completion. Not manager's job."""
     os.environ["HERMES_FLOW_PROJECT_ROOT"] = PROJECT_ROOT
     os.environ["HERMES_WORKSPACE_ROOT"] = PROJECT_ROOT
 
     from hermes_flow.tools import flow_init, flow_step, flow_send, flow_decide
+    from hermes_flow.run_paths import get_run_dir
     from hermes_flow.storage import RuntimeStore
     from hermes_flow.schemas import RunStatus
     from hermes_flow.trace import SqliteTracer, set_tracer
@@ -793,14 +874,14 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
         print(f"   {result.get('details', [])}")
         failed_run_id = result.get("run_id", "")
         if failed_run_id:
-            failed_dir = Path(PROJECT_ROOT) / ".hermes-flow" / "runs" / failed_run_id
+            failed_dir = get_run_dir(failed_run_id, PROJECT_ROOT)
             if failed_dir.exists():
                 import shutil
                 shutil.rmtree(failed_dir, ignore_errors=True)
         sys.exit(1)
 
     run_id = result["run_id"]
-    run_dir = Path(PROJECT_ROOT) / ".hermes-flow" / "runs" / run_id
+    run_dir = get_run_dir(run_id, PROJECT_ROOT)
     store = RuntimeStore(run_dir)
     store.init_schema()
 
@@ -905,26 +986,18 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
             tool_count = result.get("tool_calls", 0)
             print(f"     ✅ {val} (after {tool_count} tool call(s))")
 
-            # Product gate enforcement: verify output artifacts exist
-            # Search recursively — agent may write to a subdirectory
+            # Product gate enforcement: verify current-state artifacts only.
             output_artifacts = state_dict.get("output_artifacts", [])
             if output_artifacts:
                 for art_name in output_artifacts:
-                    # Check project root first
-                    art_path = Path(PROJECT_ROOT) / art_name
-                    if art_path.exists() and art_path.stat().st_size > 0:
-                        print(f"     📄 {art_name} ({art_path.stat().st_size} bytes) ✅")
-                        found_artifacts[art_name] = str(art_path)
-                        continue
-                    # Search recursively as fallback
-                    found = list(Path(PROJECT_ROOT).rglob(art_name))
-                    found = [f for f in found if f.is_file() and f.stat().st_size > 0]
-                    if found:
-                        fp = str(found[0])
-                        print(f"     📄 {art_name} → {found[0].relative_to(Path(PROJECT_ROOT))} ({found[0].stat().st_size} bytes) ✅")
+                    art_path, artifact_reason = _find_output_artifact(PROJECT_ROOT, art_name, _write_scope)
+                    if art_path:
+                        fp = str(art_path)
+                        rel = art_path.relative_to(Path(PROJECT_ROOT)) if art_path.is_relative_to(Path(PROJECT_ROOT)) else art_path
+                        print(f"     📄 {art_name} → {rel} ({art_path.stat().st_size} bytes) ✅")
                         found_artifacts[art_name] = fp
                     else:
-                        print(f"     ⚠️  产物 {art_name} 未找到！降级为 REQUEST_CHANGES")
+                        print(f"     ⚠️  产物 {art_name} 无效：{artifact_reason}；降级为 REQUEST_CHANGES")
                         val = "REQUEST_CHANGES"
 
             flow_decide(run_id, state_id, role_id, val, reason)

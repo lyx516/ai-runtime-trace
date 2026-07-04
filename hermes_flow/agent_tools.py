@@ -12,6 +12,7 @@ from typing import Any
 
 from hermes_flow.errors import RuntimeStateError
 from hermes_flow.observer import get_event_bus
+from hermes_flow.run_paths import get_run_dir
 from hermes_flow.storage import RuntimeStore
 from hermes_flow.tools import flow_decide, flow_send, flow_status
 from hermes_flow.trace import get_tracer
@@ -22,16 +23,13 @@ def _resolve_store(run_id: str) -> RuntimeStore:
 
     Uses the same resolution logic as hermes_flow.tools._get_store.
     """
-    import os
     from pathlib import Path
 
-    project_root = os.environ.get("HERMES_FLOW_PROJECT_ROOT", "")
-    if project_root:
-        run_dir = Path(project_root) / ".hermes-flow" / "runs" / run_id
-        if run_dir.exists():
-            store = RuntimeStore(run_dir)
-            store.init_schema()
-            return store
+    run_dir = get_run_dir(run_id)
+    if run_dir.exists():
+        store = RuntimeStore(run_dir)
+        store.init_schema()
+        return store
 
     # Fallback search
     for base in [Path.cwd(), Path.home()]:

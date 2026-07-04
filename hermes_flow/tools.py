@@ -8,6 +8,7 @@ from typing import Any
 from hermes_flow.engine import advance_state, detect_idle_timeout, evaluate_gate
 from hermes_flow.errors import RuntimeStateError
 from hermes_flow.flow_loader import load_flow_from_yaml, validate_flow
+from hermes_flow.run_paths import get_run_dir
 from hermes_flow.routing import validate_message
 from hermes_flow.schemas import (
     AgentBinding,
@@ -41,23 +42,14 @@ def error_result(message: str, details: list[str] | None = None) -> dict[str, An
 
 def _get_store(run_id: str) -> RuntimeStore:
     """Resolve a run's store from the project root."""
-    # This is a simplified resolution — in practice the project_root is stored
-    # in a config or inferred from the run directory structure.
-    # For now, search common locations.
-    import os
-    # Check if HERMES_FLOW_PROJECT_ROOT is set
-    project_root = os.environ.get("HERMES_FLOW_PROJECT_ROOT", "")
-    if project_root:
-        run_dir = Path(project_root) / ".hermes-flow" / "runs" / run_id
-        if run_dir.exists():
-            store = RuntimeStore(run_dir)
-            store.init_schema()
-            return store
+    run_dir = get_run_dir(run_id)
+    if run_dir.exists():
+        store = RuntimeStore(run_dir)
+        store.init_schema()
+        return store
 
     # Fall back to current directory search
-    import glob
     for base in [Path.cwd(), Path.home()]:
-        pattern = str(base / ".hermes-flow" / "runs" / run_id)
         matches = list(Path(base / ".hermes-flow" / "runs").glob(f"{run_id}*"))
         if matches:
             store = RuntimeStore(matches[0])
@@ -89,8 +81,7 @@ def flow_init(
 
     # Create tracing store first so ALL operations are captured
     _trace_run_id = uuid.uuid4().hex[:12]
-    _trace_run_dir = project_root_p / ".hermes-flow" / "runs" / _trace_run_id
-    _trace_run_dir.mkdir(parents=True, exist_ok=True)
+    _trace_run_dir = get_run_dir(_trace_run_id, project_root_p, create=True)
     _trace_store = RuntimeStore(_trace_run_dir)
     _trace_store.init_schema()
     set_tracer(SqliteTracer(_trace_store, run_id=_trace_run_id))

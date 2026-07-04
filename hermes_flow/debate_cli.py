@@ -20,6 +20,8 @@ def resolve_project_root() -> str:
 
 
 def main():
+    repo_root = Path(__file__).resolve().parent.parent
+
     # ── Parse --workdir from argv before delegating ──
     workdir = ""
     remaining = []
@@ -41,6 +43,8 @@ def main():
         os.makedirs(workdir, exist_ok=True)
     else:
         project_root = resolve_project_root()
+
+    os.environ.setdefault("HERMES_FLOW_RUNS_DIR", str(repo_root / ".hermes-flow" / "runs"))
 
     sys.argv = [sys.argv[0]] + remaining
 

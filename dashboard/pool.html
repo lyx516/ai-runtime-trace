@@ -1,53 +1,60 @@
 <!DOCTYPE html>
 <html lang="zh">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Agent Pool — Hermes Flow</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f1117;color:#e1e4e8;padding:24px}
-h1{font-size:20px;font-weight:600;margin-bottom:20px;color:#f0f6fc}
-.agent-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px}
-.card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;cursor:pointer}
-.card:hover{border-color:#58a6ff44}
-.card-header{display:flex;justify-content:space-between;margin-bottom:8px}
-.name{font-size:15px;font-weight:600;color:#f0f6fc}
-.role{font-size:11px;color:#8b949e;background:#21262d;padding:2px 8px;border-radius:10px}
-.desc{font-size:13px;color:#8b949e;margin-bottom:10px}
-.tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:10px;margin:2px 2px 0 0}
-.skill{background:#1f6feb33;color:#58a6ff;border:1px solid #1f6feb44}
-.tool{background:#daa52033;color:#d29922;border:1px solid #daa52044}
-.stat-bar{display:flex;gap:16px;margin-bottom:20px}
-.stat{border:1px solid #30363d;border-radius:6px;padding:10px 16px;background:#161b22}
-.num{font-size:22px;font-weight:600;color:#f0f6fc}
-.lbl{font-size:12px;color:#8b949e}
-</style></head><body>
-<h1>🧠 Agent Pool</h1>
-<div class="stat-bar" id="stats"></div>
-<div class="agent-grid" id="grid"></div>
-<script>
-function escapeHtml(v){
-  return String(v??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
-}
-async function load(){
-  const r=await fetch('/api/pool').catch(()=>null);
-  if(!r) return document.getElementById('grid').innerHTML='<p style="color:#f85149">无法连接 Observer</p>';
-  const d=await r.json();
-  if(d.error) return document.getElementById('grid').innerHTML=`<p style="color:#f85149">${escapeHtml(d.error)}</p>`;
-  const a=d.agents||[];
-  const skills=new Set(a.flatMap(x=>x.assigned_skills||[])).size;
-  const tools=new Set(a.flatMap(x=>x.tools_allowed||[])).size;
-  document.getElementById('stats').innerHTML=
-    `<div class=stat><div class=num>${a.length}</div><div class=lbl>智能体</div></div>`+
-    `<div class=stat><div class=num>${skills}</div><div class=lbl>共享技能</div></div>`+
-    `<div class=stat><div class=num>${tools}</div><div class=lbl>可用工具</div></div>`;
-  document.getElementById('grid').innerHTML=a.map(x=>
-    `<div class=card onclick=this.classList.toggle('open')>`+
-      `<div class=card-header><span class=name>${escapeHtml(x.display_name||x.agent_id)}</span><span class=role>${escapeHtml(x.role||'')}</span></div>`+
-      `<div class=desc>${escapeHtml((x.description||'').slice(0,80))}</div>`+
-      `<div>${(x.assigned_skills||[]).map(s=>`<span class="tag skill">📘 ${escapeHtml(s)}</span>`).join('')}`+
-      `${(x.tools_allowed||[]).map(t=>`<span class="tag tool">🔧 ${escapeHtml(t)}</span>`).join('')}</div>`+
-    `</div>`
-  ).join('');
-}
-load();
-</script></body></html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hermes Flow Agent 管理</title>
+<link rel="stylesheet" href="pool.css">
+</head>
+<body>
+<div class="topbar">
+  <span class="topbar-logo">Hermes Flow</span>
+  <nav class="topbar-nav" aria-label="主导航">
+    <a href="/">📡 观测</a>
+    <a class="active" href="pool.html">🤖 管理</a>
+  </nav>
+  <span id="status-pill" class="status-pill">连接中</span>
+</div>
+
+<main id="app" class="admin-layout">
+  <aside class="panel tree-panel" aria-label="Agent 树">
+    <div class="panel-head">
+      <div>
+        <h1>Agent 树</h1>
+        <p id="agent-root" class="muted">扫描 agents/</p>
+      </div>
+      <button id="refresh-btn" class="ghost-btn" type="button">刷新</button>
+    </div>
+    <label class="search-box">
+      <span>筛选</span>
+      <input id="agent-filter" type="search" placeholder="agent id / 名称 / role">
+    </label>
+    <div id="agent-tree" class="tree-list loading">加载 Agent...</div>
+  </aside>
+
+  <section class="panel detail-panel" aria-label="详情编辑">
+    <div id="detail" class="detail-empty">
+      <div class="empty-title">选择一个 Agent</div>
+      <p>左侧目录层级由后端解析为继承关系。详情页展示可编辑的本地配置，并显示后端合并后的继承预览。</p>
+    </div>
+  </section>
+
+  <aside class="panel pool-panel" aria-label="Skill 和 Tool 池">
+    <div class="panel-head compact">
+      <div class="segmented" role="tablist" aria-label="资源池">
+        <button id="tab-skills" class="active" type="button" data-pool="skills">Skill 池</button>
+        <button id="tab-tools" type="button" data-pool="tools">Tool 池</button>
+      </div>
+    </div>
+    <label class="search-box">
+      <span>搜索</span>
+      <input id="pool-filter" type="search" placeholder="名称 / id / 描述">
+    </label>
+    <div id="pool-content" class="pool-list loading">加载资源...</div>
+  </aside>
+</main>
+
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="pool.js"></script>
+</body>
+</html>

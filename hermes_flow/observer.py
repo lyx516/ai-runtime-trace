@@ -29,9 +29,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from hermes_flow.run_paths import get_runs_dir
 
-RUNS_DIR_NAME = ".hermes-flow/runs"
+logger = logging.getLogger(__name__)
 
 
 def _now() -> str:
@@ -39,18 +39,8 @@ def _now() -> str:
 
 
 def _find_runs_dir(project_root: str | None = None) -> Path:
-    """Find the .hermes-flow/runs directory."""
-    if project_root:
-        p = Path(project_root) / RUNS_DIR_NAME
-        if p.exists():
-            return p
-    for base in [Path.cwd(), Path.home()]:
-        p = base / RUNS_DIR_NAME
-        if p.exists():
-            return p
-    # Fallback to experiments
-    p = Path.home() / "ai-runtime-trace" / RUNS_DIR_NAME.lstrip("/")
-    return p
+    """Return the canonical .hermes-flow/runs directory."""
+    return get_runs_dir(project_root)
 
 
 def _get_store(run_id: str, runs_dir: Path):
@@ -118,6 +108,8 @@ class SSEHandler(http.server.BaseHTTPRequestHandler):
 
     # Shared across instances
     runs_dir = _find_runs_dir()
+    project_root: Path | None = None
+    agent_pool_dir: Path | None = None
     event_bus = _bus
 
     def log_message(self, format, *args):
@@ -154,54 +146,66 @@ class SSEHandler(http.server.BaseHTTPRequestHandler):
     def _read_store(self, run_id: str):
         if not run_id:
             return None
-        try:
-            return _get_store(run_id, self.runs_dir)
-        except Exception:
-            return None
+        for runs_dir in self._iter_runs_dirs():
+            try:
+                store = _get_store(run_id, runs_dir)
+                if store:
+                    return store
+            except Exception:
+                continue
+        return None
+
+    def _iter_runs_dirs(self) -> list[Path]:
+        """Return the single canonical run directory visible to the observer."""
+        return [self.runs_dir] if self.runs_dir.exists() else []
 
     def _list_runs(self) -> list[dict]:
         runs = []
-        if not self.runs_dir.exists():
-            return runs
-        for d in sorted(self.runs_dir.iterdir(), reverse=True):
-            if d.is_dir():
-                db = d / "state.sqlite"
-                if db.exists():
-                    display_name = d.name
-                    created_at = ""
-                    updated_at = ""
-                    try:
-                        from datetime import datetime, timezone
+        by_id: dict[str, dict] = {}
+        for runs_dir in self._iter_runs_dirs():
+            for d in sorted(runs_dir.iterdir(), reverse=True):
+                if d.is_dir():
+                    db = d / "state.sqlite"
+                    if db.exists():
+                        display_name = d.name
+                        created_at = ""
+                        updated_at = ""
+                        try:
+                            from datetime import datetime, timezone
 
-                        updated_at = datetime.fromtimestamp(
-                            db.stat().st_mtime,
-                            tz=timezone.utc,
-                        ).isoformat()
-                    except Exception:
-                        pass
-                    try:
-                        import sqlite3
-                        c = sqlite3.connect(str(db))
-                        row = c.execute(
-                            "SELECT display_name, created_at FROM runs WHERE run_id=?",
-                            (d.name,),
-                        ).fetchone()
-                        if row and row[0]:
-                            display_name = row[0]
-                        if row and len(row) > 1 and row[1]:
-                            created_at = row[1]
-                        c.close()
-                    except Exception:
-                        pass
-                    runs.append({
-                        "run_id": d.name,
-                        "display_name": display_name,
-                        "created_at": created_at,
-                        "updated_at": updated_at,
-                        "path": str(d),
-                        "db_size": db.stat().st_size if db.exists() else 0,
-                    })
-        runs.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+                            updated_at = datetime.fromtimestamp(
+                                db.stat().st_mtime,
+                                tz=timezone.utc,
+                            ).isoformat()
+                        except Exception:
+                            pass
+                        try:
+                            import sqlite3
+                            c = sqlite3.connect(str(db))
+                            row = c.execute(
+                                "SELECT display_name, created_at FROM runs WHERE run_id=?",
+                                (d.name,),
+                            ).fetchone()
+                            if row and row[0]:
+                                display_name = row[0]
+                            if row and len(row) > 1 and row[1]:
+                                created_at = row[1]
+                            c.close()
+                        except Exception:
+                            pass
+                        item = {
+                            "run_id": d.name,
+                            "display_name": display_name,
+                            "created_at": created_at,
+                            "updated_at": updated_at,
+                            "path": str(d),
+                            "db_size": db.stat().st_size if db.exists() else 0,
+                        }
+                        current = by_id.get(d.name)
+                        if not current or (item.get("updated_at") or "") > (current.get("updated_at") or ""):
+                            by_id[d.name] = item
+        runs = list(by_id.values())
+        runs.sort(key=lambda r: r.get("created_at") or r.get("updated_at") or "", reverse=True)
         return runs
 
     def _get_run_status(self, run_id: str) -> dict | None:
@@ -332,6 +336,21 @@ class SSEHandler(http.server.BaseHTTPRequestHandler):
         if path == "/api/pool":
             return self._serve_pool_api()
 
+        if path == "/api/admin/agents":
+            return self._send_json(self._list_admin_agents())
+
+        if path.startswith("/api/admin/agents/"):
+            agent_id = urllib.parse.unquote(path.removeprefix("/api/admin/agents/"))
+            data = self._get_admin_agent(agent_id)
+            status = 404 if data.get("error") else 200
+            return self._send_json(data, status)
+
+        if path == "/api/admin/skills":
+            return self._send_json(self._list_admin_skills())
+
+        if path == "/api/admin/tools":
+            return self._send_json(self._list_admin_tools())
+
         if path.startswith("/api/runs/"):
             parts = path.split("/")
             if len(parts) >= 4:
@@ -439,6 +458,33 @@ class SSEHandler(http.server.BaseHTTPRequestHandler):
                 return self._send_json(result)
             except Exception as e:
                 return self._send_json({"ok": False, "error": str(e)}, 500)
+
+        return self._send_json({"error": "not found"}, 404)
+
+    def do_OPTIONS(self):
+        """Handle CORS preflight for admin writes."""
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, PUT, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
+    def do_PUT(self):
+        """Handle admin writes."""
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path.rstrip("/")
+        content_len = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_len).decode() if content_len else "{}"
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            return self._send_json({"ok": False, "error": "invalid json"}, 400)
+
+        if path.startswith("/api/admin/agents/"):
+            agent_id = urllib.parse.unquote(path.removeprefix("/api/admin/agents/"))
+            result = self._save_admin_agent(agent_id, payload)
+            status = 400 if result.get("error") else 200
+            return self._send_json(result, status)
 
         return self._send_json({"error": "not found"}, 404)
 
@@ -827,18 +873,246 @@ class SSEHandler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             return {"error": str(e)}
 
-    def _serve_pool_api(self):
-        """Serve agent pool data from the project's agents/ directory."""
+    def _get_agent_pool_dir(self) -> Path | None:
+        """Locate the agent-pool data directory used by admin APIs."""
+        if self.agent_pool_dir and self.agent_pool_dir.exists():
+            return self.agent_pool_dir
         candidates = [
             Path(__file__).resolve().parent.parent / "experiments" / "agent-pool",
             Path(__file__).resolve().parent.parent / "experiments" / "agent-pool-plugin",
             Path.home() / ".hermes" / "plugins" / "agent-pool",
         ]
-        plugin_dir = None
-        for c in candidates:
-            if (c / "agents").exists():
-                plugin_dir = c
+        for candidate in candidates:
+            if (candidate / "agents").exists():
+                return candidate
+        return None
+
+    def _read_yaml_file(self, path: Path) -> dict:
+        if not path.exists():
+            return {}
+        try:
+            import yaml
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _write_yaml_file(self, path: Path, data: dict) -> None:
+        import yaml
+        path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+    def _parse_markdown_meta(self, path: Path) -> dict:
+        """Read YAML front matter from skill markdown files."""
+        if not path.exists():
+            return {}
+        text = path.read_text(encoding="utf-8")
+        if not text.startswith("---"):
+            return {}
+        end = text.find("\n---", 3)
+        if end < 0:
+            return {}
+        try:
+            import yaml
+            data = yaml.safe_load(text[3:end])
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _agent_id_from_parts(self, parts: tuple[str, ...]) -> str:
+        if len(parts) == 1:
+            return parts[0]
+        parent_id = self._agent_id_from_parts(parts[:-1])
+        return f"{parts[-1]}-{parent_id}"
+
+    def _scan_agent_dirs(self) -> dict[str, dict]:
+        pool_dir = self._get_agent_pool_dir()
+        if not pool_dir:
+            return {}
+        agents_dir = pool_dir / "agents"
+        candidates: list[Path] = []
+        for path in sorted(agents_dir.rglob("*")):
+            if path.is_dir() and ((path / "meta.yaml").exists() or (path / "SOUL.md").exists()):
+                candidates.append(path)
+        by_parts = {tuple(path.relative_to(agents_dir).parts): path for path in candidates}
+        scanned: dict[str, dict] = {}
+        for parts, path in sorted(by_parts.items(), key=lambda item: (len(item[0]), item[0])):
+            agent_id = self._agent_id_from_parts(parts)
+            parent_parts = parts[:-1]
+            parent_id = self._agent_id_from_parts(parent_parts) if parent_parts in by_parts else None
+            scanned[agent_id] = {
+                "id": agent_id,
+                "path": path,
+                "relative_path": "/".join(parts),
+                "parent": parent_id,
+            }
+        return scanned
+
+    def _read_agent_local(self, agent_id: str, scanned: dict[str, dict] | None = None) -> dict | None:
+        scanned = scanned or self._scan_agent_dirs()
+        entry = scanned.get(agent_id)
+        if not entry:
+            return None
+        path = entry["path"]
+        meta = self._read_yaml_file(path / "meta.yaml")
+        soul_path = path / "SOUL.md"
+        memory_path = path / "Memory.md"
+        local_soul = soul_path.read_text(encoding="utf-8") if soul_path.exists() else str(meta.get("soul") or "")
+        memory = memory_path.read_text(encoding="utf-8") if memory_path.exists() else ""
+        local_skills = meta.get("assigned_skills", meta.get("skills", [])) or []
+        local_tools = meta.get("tools_allowed", meta.get("tools", [])) or []
+        if not isinstance(local_skills, list):
+            local_skills = [str(local_skills)]
+        if not isinstance(local_tools, list):
+            local_tools = [str(local_tools)]
+        private_skills_dir = path / "skills"
+        private_skills = sorted(p.stem for p in private_skills_dir.glob("*.md")) if private_skills_dir.exists() else []
+        return {
+            "id": agent_id,
+            "agent_id": meta.get("agent_id", agent_id),
+            "display_name": meta.get("display_name", agent_id),
+            "role": meta.get("role", ""),
+            "description": meta.get("description", ""),
+            "parent": entry["parent"],
+            "relative_path": entry["relative_path"],
+            "meta": meta,
+            "local_soul": local_soul,
+            "memory": memory,
+            "local_skills": [str(s) for s in local_skills],
+            "private_skills": private_skills,
+            "local_tools": [str(t) for t in local_tools],
+        }
+
+    def _merge_unique(self, *groups: list[str]) -> list[str]:
+        merged: list[str] = []
+        seen: set[str] = set()
+        for group in groups:
+            for item in group:
+                if item not in seen:
+                    seen.add(item)
+                    merged.append(item)
+        return merged
+
+    def _get_admin_agent(self, agent_id: str) -> dict:
+        scanned = self._scan_agent_dirs()
+        local = self._read_agent_local(agent_id, scanned)
+        if not local:
+            return {"error": "agent not found"}
+        chain: list[dict] = []
+        parent_id = local.get("parent")
+        while parent_id:
+            parent = self._read_agent_local(parent_id, scanned)
+            if not parent:
                 break
+            chain.insert(0, parent)
+            parent_id = parent.get("parent")
+        inherited_soul = "\n\n".join(a["local_soul"] for a in chain if a.get("local_soul"))
+        soul = "\n\n".join(part for part in [inherited_soul, local["local_soul"]] if part)
+        inherited_skills = self._merge_unique(*[a["local_skills"] for a in chain]) if chain else []
+        inherited_tools = self._merge_unique(*[a["local_tools"] for a in chain]) if chain else []
+        local["inherited_soul"] = inherited_soul
+        local["soul"] = soul
+        local["inherited_skills"] = inherited_skills
+        local["skills"] = self._merge_unique(inherited_skills, local["local_skills"])
+        local["inherited_tools"] = inherited_tools
+        local["tools"] = self._merge_unique(inherited_tools, local["local_tools"])
+        return local
+
+    def _list_admin_agents(self) -> dict:
+        scanned = self._scan_agent_dirs()
+        agents = []
+        for agent_id in sorted(scanned):
+            detail = self._get_admin_agent(agent_id)
+            if detail.get("error"):
+                continue
+            agents.append({
+                "id": agent_id,
+                "agent_id": detail.get("agent_id", agent_id),
+                "display_name": detail.get("display_name", agent_id),
+                "role": detail.get("role", ""),
+                "description": detail.get("description", ""),
+                "parent": detail.get("parent"),
+                "relative_path": detail.get("relative_path", ""),
+                "skills": detail.get("skills", []),
+                "tools": detail.get("tools", []),
+                "private_skills": detail.get("private_skills", []),
+            })
+        pool_dir = self._get_agent_pool_dir()
+        return {"agents": agents, "root": str(pool_dir.resolve()) if pool_dir else ""}
+
+    def _save_admin_agent(self, agent_id: str, payload: dict) -> dict:
+        scanned = self._scan_agent_dirs()
+        entry = scanned.get(agent_id)
+        if not entry:
+            return {"ok": False, "error": "agent not found"}
+        path = entry["path"]
+        meta_path = path / "meta.yaml"
+        meta = self._read_yaml_file(meta_path)
+        for key in ["display_name", "role", "description"]:
+            if key in payload:
+                meta[key] = payload.get(key) or ""
+        local_soul = payload.get("local_soul", payload.get("soul"))
+        if local_soul is not None:
+            text = str(local_soul)
+            (path / "SOUL.md").write_text(text, encoding="utf-8")
+            if "soul" in meta:
+                meta["soul"] = text
+        if "memory" in payload:
+            (path / "Memory.md").write_text(str(payload.get("memory") or ""), encoding="utf-8")
+        if "local_skills" in payload or "assigned_skills" in payload:
+            skills = payload.get("local_skills", payload.get("assigned_skills")) or []
+            meta["assigned_skills"] = [str(s) for s in skills]
+        if "local_tools" in payload or "tools_allowed" in payload:
+            tools = payload.get("local_tools", payload.get("tools_allowed")) or []
+            meta["tools_allowed"] = [str(t) for t in tools]
+        meta.setdefault("agent_id", agent_id)
+        self._write_yaml_file(meta_path, meta)
+        return {"ok": True, "agent": self._get_admin_agent(agent_id)}
+
+    def _list_admin_skills(self) -> dict:
+        pool_dir = self._get_agent_pool_dir()
+        if not pool_dir:
+            return {"skills": [], "error": "Agent pool plugin not found"}
+        roots = [("shared", pool_dir / "shared" / "skills"), ("manager", pool_dir / "agents" / "manager" / "skills")]
+        skills = []
+        for source, root in roots:
+            if not root.exists():
+                continue
+            for path in sorted(root.rglob("*.md")):
+                meta = self._parse_markdown_meta(path)
+                skill_id = path.parent.name if path.name == "SKILL.md" else path.stem
+                skills.append({
+                    "id": skill_id,
+                    "name": str(meta.get("name") or skill_id),
+                    "description": str(meta.get("description") or ""),
+                    "source": source,
+                    "relative_path": str(path.relative_to(pool_dir)),
+                })
+        return {"skills": skills}
+
+    def _list_admin_tools(self) -> dict:
+        pool_dir = self._get_agent_pool_dir()
+        if not pool_dir:
+            return {"tools": [], "error": "Agent pool plugin not found"}
+        tools_dir = pool_dir / "tools"
+        tools = []
+        if tools_dir.exists():
+            for meta_path in sorted(tools_dir.glob("*/meta.yaml")):
+                meta = self._read_yaml_file(meta_path)
+                tool_id = str(meta.get("tool_id") or meta_path.parent.name)
+                tools.append({
+                    "id": tool_id,
+                    "name": str(meta.get("name") or tool_id),
+                    "description": str(meta.get("description") or ""),
+                    "category": str(meta.get("category") or ""),
+                    "risk": str(meta.get("risk") or ""),
+                    "universal": bool(meta.get("universal", False)),
+                    "relative_path": str(meta_path.relative_to(pool_dir)),
+                })
+        return {"tools": tools}
+
+    def _serve_pool_api(self):
+        """Serve agent pool data from the project's agents/ directory."""
+        plugin_dir = self._get_agent_pool_dir()
         if not plugin_dir:
             return self._send_json({"error": "Agent pool plugin not found"}, 404)
         import yaml
@@ -902,6 +1176,7 @@ class FlowObserver:
         self._server: http.server.HTTPServer | None = None
         self._thread: threading.Thread | None = None
         if project_root:
+            SSEHandler.project_root = Path(project_root)
             SSEHandler.runs_dir = _find_runs_dir(project_root)
 
     def start(self) -> None:
@@ -1217,6 +1492,7 @@ def main():
     args = parser.parse_args()
 
     if args.project_root:
+        SSEHandler.project_root = Path(args.project_root)
         SSEHandler.runs_dir = _find_runs_dir(args.project_root)
 
     from http.server import ThreadingHTTPServer
