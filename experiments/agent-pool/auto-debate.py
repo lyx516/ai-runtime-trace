@@ -394,7 +394,7 @@ def _build_multi_turn_system_prompt(
         parts.extend([
             "## 工作方式",
             "1. 分析目标，明确要产出的内容",
-            "2. 用 file_write 写入产物",
+            "2. 用 patch (mode=create) 创建产物文件",
             "3. 完成后调用 submit_decision(APPROVE)",
             "",
         ])

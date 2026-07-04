@@ -1,44 +1,79 @@
-"""文件修补工具 — 精确查找替换，支持 3 种模式。"""
+"""文件修补工具 — 支持 create / replace / patch / verified 四种模式。
+
+create   — 创建新文件（文件已存在则报错）
+replace  — 精确查找替换（必须匹配到目标）
+patch    — V4A 多文件批量补丁（支持 Add / Update / Delete File）
+verified — 带行号锚点的安全替换（合并冲突检测）
+"""
+
 import os
 import re
 from pathlib import Path
 
+
 def run(args: dict) -> dict:
     mode = args.get("mode", "replace")
     path = args.get("path", "")
+    content = args.get("content", "")
     old_string = args.get("old_string", "")
     new_string = args.get("new_string", "")
     replace_all = args.get("replace_all", False)
     patch_content = args.get("patch", "")
 
-    # Reject empty-arg calls that waste time
-    if mode in ("replace",) and not old_string and not path:
-        return {
-            "ok": False,
-            "error": "patch: old_string and path are both empty. "
-                     "Provide both 'path' and 'old_string' to perform a replacement. "
-                     "Do not retry this call with empty arguments.",
-        }
-    if mode in ("patch", "verified") and not patch_content:
-        return {
-            "ok": False,
-            "error": f"patch: 'patch' content is empty for mode='{mode}'. "
-                     "Provide the 'patch' argument with valid V4A patch content. "
-                     "Do not retry this call with empty arguments.",
-        }
+    # ── Empty-arg fast-fail ──
+    if mode == "create":
+        if not path:
+            return {
+                "ok": False,
+                "error": "patch: missing required field 'path' for mode='create'. "
+                         "Provide 'path' (file path) and 'content' (file contents).",
+            }
+        if not content:
+            return {
+                "ok": False,
+                "error": "patch: missing required field 'content' for mode='create'. "
+                         "The 'content' field must contain the full file content to write. "
+                         "Do not retry this call with empty content.",
+            }
+    elif mode == "replace":
+        if not old_string and not path:
+            return {
+                "ok": False,
+                "error": "patch: old_string and path are both empty. "
+                         "Provide both 'path' and 'old_string' to perform a replacement. "
+                         "Do not retry this call with empty arguments.",
+            }
+    elif mode in ("patch", "verified"):
+        if not patch_content:
+            return {
+                "ok": False,
+                "error": f"patch: 'patch' content is empty for mode='{mode}'. "
+                         "Provide the 'patch' argument with valid V4A patch content. "
+                         "Do not retry this call with empty arguments.",
+            }
 
+    # ── Dispatch ──
     try:
-        if mode == "replace":
+        if mode == "create":
+            return _mode_create(path, content)
+        elif mode == "replace":
             return _mode_replace(path, old_string, new_string, replace_all)
         elif mode == "patch":
             return _mode_v4a(patch_content)
         elif mode == "verified":
             return _mode_verified(patch_content)
         else:
-            return {"ok": False, "error": f"Unknown mode: {mode}. Supported: replace, patch, verified"}
+            return {
+                "ok": False,
+                "error": f"Unknown mode: {mode}. Supported: create, replace, patch, verified",
+            }
     except PermissionError as e:
         return {"ok": False, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "error": f"patch({mode}): unexpected error — {e}"}
 
+
+# ── Shared helpers ──
 
 def _resolve_path(path: str) -> Path:
     """Resolve a file path within workspace scope."""
@@ -55,18 +90,15 @@ def _read_file(path: Path) -> tuple:
     try:
         return path.read_text(encoding="utf-8"), None
     except Exception as e:
-        return "", str(e)
+        return "", f"Failed to read {path}: {e}"
 
 
 def _unified_diff(old: str, new: str, filepath: str) -> str:
     """Generate a simple unified diff string."""
+    import difflib
     old_lines = old.splitlines(True)
     new_lines = new.splitlines(True)
-    diff = []
-    diff.append(f"--- {filepath}")
-    diff.append(f"+++ {filepath}")
-    # Simple line-by-line diff
-    import difflib
+    diff = [f"--- {filepath}", f"+++ {filepath}"]
     for line in difflib.unified_diff(old_lines, new_lines, fromfile=filepath, tofile=filepath, n=3):
         diff.append(line.rstrip("\n"))
     return "\n".join(diff)
@@ -78,18 +110,51 @@ def _check_lint(path: Path, content: str):
     if ext == ".py":
         try:
             compile(content, str(path), "exec")
-            return None  # no errors
+            return None
         except SyntaxError as e:
             return {"file": str(path), "line": e.lineno, "message": str(e)}
     return None
 
 
+# ── Mode implementations ──
+
+def _mode_create(path: str, content: str) -> dict:
+    """Create a new file. Fails if the file already exists."""
+    full_path = _resolve_path(path)
+
+    if full_path.exists():
+        return {
+            "ok": False,
+            "error": f"patch(create): file already exists — '{path}'. "
+                     "Use mode='replace' to edit existing files, or choose a different path.",
+        }
+
+    try:
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_text(content, encoding="utf-8")
+    except PermissionError as e:
+        return {"ok": False, "error": f"patch(create): permission denied — {e}"}
+    except OSError as e:
+        return {"ok": False, "error": f"patch(create): cannot write — {e}"}
+
+    lint_result = _check_lint(full_path, content)
+
+    return {
+        "ok": True,
+        "diff": f"Created file: {path}",
+        "files_modified": [str(full_path)],
+        "match_count": 1,
+        "strategy": "create",
+        "lint": lint_result,
+    }
+
+
 def _mode_replace(path: str, old_string: str, new_string: str, replace_all: bool) -> dict:
     """Replace mode: find unique string and replace it."""
     if not path:
-        return {"ok": False, "error": "patch: missing required field 'path' for mode='replace'"}
+        return {"ok": False, "error": "patch(replace): missing required field 'path'"}
     if not old_string:
-        return {"ok": False, "error": "patch: missing required field 'old_string' for mode='replace'"}
+        return {"ok": False, "error": "patch(replace): missing required field 'old_string'"}
 
     full_path = _resolve_path(path)
     content, err = _read_file(full_path)
@@ -105,17 +170,18 @@ def _mode_replace(path: str, old_string: str, new_string: str, replace_all: bool
     if match_count == 0:
         return {
             "ok": False,
-            "error": f"Could not find '{old_string[:60]}' in '{path}'. {error or ''}",
+            "error": f"patch(replace): could not find '{old_string[:80]}' in '{path}'. {error or ''}",
         }
 
-    # Generate diff before writing
     diff = _unified_diff(content, new_content, str(full_path))
 
     try:
         full_path.parent.mkdir(parents=True, exist_ok=True)
         full_path.write_text(new_content, encoding="utf-8")
-    except Exception as e:
-        return {"ok": False, "error": f"Failed to write: {e}"}
+    except PermissionError as e:
+        return {"ok": False, "error": f"patch(replace): permission denied — {e}"}
+    except OSError as e:
+        return {"ok": False, "error": f"patch(replace): cannot write — {e}"}
 
     lint_result = _check_lint(full_path, new_content)
 
@@ -129,9 +195,11 @@ def _mode_replace(path: str, old_string: str, new_string: str, replace_all: bool
     }
 
 
+# ── V4A parser ──
+
 def _parse_v4a(patch_content: str) -> list[dict]:
     """Parse V4A format patch into operations list.
-    
+
     Format:
         *** Begin Patch
         *** Update File: path/to/file
@@ -140,12 +208,12 @@ def _parse_v4a(patch_content: str) -> list[dict]:
         -removed line
         +added line
         *** End Patch
-    
+
     Also supports:
         *** Add File: path/to/newfile
         content here
         *** End Patch
-        
+
         *** Delete File: path/to/file
     """
     operations = []
@@ -154,7 +222,6 @@ def _parse_v4a(patch_content: str) -> list[dict]:
     current_hunk = None
 
     for line in patch_content.split("\n"):
-        # File header
         header_match = re.match(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s+(.+)$', line.strip())
         if header_match:
             if current_op:
@@ -168,7 +235,6 @@ def _parse_v4a(patch_content: str) -> list[dict]:
             current_hunk = None
             continue
 
-        # Hunk header
         hunk_match = re.match(r'^@@\s+(.+?)\s+@@$', line.strip())
         if hunk_match and current_op:
             if current_hunk:
@@ -179,7 +245,6 @@ def _parse_v4a(patch_content: str) -> list[dict]:
             }
             continue
 
-        # Raw content for Add mode (no @@ header)
         if current_op and current_op["action"] == "Add" and current_hunk is None:
             if "raw_content" not in current_op:
                 current_op["raw_content"] = ""
@@ -194,7 +259,6 @@ def _parse_v4a(patch_content: str) -> list[dict]:
             current_op["raw_content"] += line + "\n"
             continue
 
-        # Content lines within a hunk
         if current_hunk is not None:
             if line.startswith("+") and not line.startswith("+++"):
                 current_hunk["lines"].append({"prefix": "+", "content": line[1:]})
@@ -212,7 +276,6 @@ def _parse_v4a(patch_content: str) -> list[dict]:
                     current_op = None
                     current_hunks = []
 
-    # Flush remaining
     if current_hunk:
         current_hunks.append(current_hunk)
     if current_op:
@@ -223,15 +286,15 @@ def _parse_v4a(patch_content: str) -> list[dict]:
 
 
 def _mode_v4a(patch_content: str) -> dict:
-    """Apply a V4A format patch."""
+    """Apply a V4A format patch (multi-file Add/Update/Delete)."""
     if not patch_content:
-        return {"ok": False, "error": "patch: missing required field 'patch' for mode='patch'"}
+        return {"ok": False, "error": "patch(patch): missing required field 'patch'"}
 
     from tools.fuzzy_match import fuzzy_find_and_replace
 
     operations = _parse_v4a(patch_content)
     if not operations:
-        return {"ok": False, "error": "Failed to parse patch: no operations found"}
+        return {"ok": False, "error": "patch(patch): failed to parse — no operations found"}
 
     files_modified = []
     combined_diff_parts = []
@@ -246,21 +309,21 @@ def _mode_v4a(patch_content: str) -> dict:
                 full_path.parent.mkdir(parents=True, exist_ok=True)
                 hunks = op.get("hunks", [])
                 if hunks:
-                    # Content from hunk lines (with @@ header)
                     new_content = ""
                     for hunk in hunks:
                         for line in hunk.get("lines", []):
                             new_content += line["content"] + "\n"
                 else:
-                    # Raw content (no @@ header) collected during parse
                     new_content = op.get("raw_content", "")
                 if new_content and new_content.endswith("\n\n"):
                     new_content = new_content[:-1]
                 full_path.write_text(new_content, encoding="utf-8")
                 files_modified.append(str(full_path))
                 combined_diff_parts.append(f"Added file: {file_path}")
-            except Exception as e:
-                return {"ok": False, "error": f"Failed to create {file_path}: {e}"}
+            except PermissionError as e:
+                return {"ok": False, "error": f"patch(patch): permission denied creating {file_path} — {e}"}
+            except OSError as e:
+                return {"ok": False, "error": f"patch(patch): cannot create {file_path} — {e}"}
             continue
 
         if action == "Delete":
@@ -269,8 +332,10 @@ def _mode_v4a(patch_content: str) -> dict:
                     full_path.unlink()
                     files_modified.append(str(full_path))
                     combined_diff_parts.append(f"Deleted file: {file_path}")
-                except Exception as e:
-                    return {"ok": False, "error": f"Failed to delete {file_path}: {e}"}
+                except PermissionError as e:
+                    return {"ok": False, "error": f"patch(patch): permission denied deleting {file_path} — {e}"}
+                except OSError as e:
+                    return {"ok": False, "error": f"patch(patch): cannot delete {file_path} — {e}"}
             continue
 
         if action == "Update":
@@ -278,7 +343,6 @@ def _mode_v4a(patch_content: str) -> dict:
             if err:
                 return {"ok": False, "error": err}
 
-            # Apply each hunk
             new_content = content
             for hunk in op.get("hunks", []):
                 lines = hunk.get("lines", [])
@@ -295,7 +359,7 @@ def _mode_v4a(patch_content: str) -> dict:
                     if count == 0:
                         return {
                             "ok": False,
-                            "error": f"V4A hunk failed: could not find target in {file_path}",
+                            "error": f"patch(patch): V4A hunk failed — could not find target in {file_path}",
                         }
 
             if new_content != content:
@@ -304,8 +368,10 @@ def _mode_v4a(patch_content: str) -> dict:
                     full_path.write_text(new_content, encoding="utf-8")
                     files_modified.append(str(full_path))
                     combined_diff_parts.append(diff)
-                except Exception as e:
-                    return {"ok": False, "error": f"Failed to write {file_path}: {e}"}
+                except PermissionError as e:
+                    return {"ok": False, "error": f"patch(patch): permission denied writing {file_path} — {e}"}
+                except OSError as e:
+                    return {"ok": False, "error": f"patch(patch): cannot write {file_path} — {e}"}
 
     return {
         "ok": True,
@@ -315,9 +381,9 @@ def _mode_v4a(patch_content: str) -> dict:
 
 
 def _mode_verified(patch_content: str) -> dict:
-    """Apply verified anchored V4A-style update hunks."""
+    """Apply verified anchored V4A-style update hunks (merge-conflict detection)."""
     if not patch_content:
-        return {"ok": False, "error": "patch: missing required field 'patch' for mode='verified'"}
+        return {"ok": False, "error": "patch(verified): missing required field 'patch'"}
 
     from tools.verified_patch_core import (
         VerifiedPatchError, VerifiedOperation, apply_operations,
@@ -326,17 +392,18 @@ def _mode_verified(patch_content: str) -> dict:
 
     operations = _parse_v4a(patch_content)
     if not operations:
-        return {"ok": False, "error": "Failed to parse verified patch: no operations found"}
+        return {"ok": False, "error": "patch(verified): failed to parse — no operations found"}
 
     for op in operations:
         if op["action"] != "Update":
             return {
                 "ok": False,
-                "error": "verified mode currently supports update hunks only; use mode='patch' for add/delete operations",
+                "error": "patch(verified): only supports Update hunks. "
+                         "Use mode='patch' for Add/Delete operations.",
             }
 
-    resolved = {}  # file_path -> current content
-    grouped_ops = {}  # file_path -> list of VerifiedOperation
+    resolved = {}
+    grouped_ops = {}
 
     for op in operations:
         file_path = op["file_path"]
@@ -410,7 +477,7 @@ def _mode_verified(patch_content: str) -> dict:
         for file_path, edits in grouped_ops.items():
             staged[file_path] = apply_operations(resolved[file_path], edits)
     except VerifiedPatchError as e:
-        return {"ok": False, "error": f"verified patch rejected: {e}"}
+        return {"ok": False, "error": f"patch(verified): rejected — {e}"}
 
     files_modified = []
     combined_diff_parts = []
@@ -422,8 +489,10 @@ def _mode_verified(patch_content: str) -> dict:
             full_path.write_text(new_content, encoding="utf-8")
             files_modified.append(str(full_path))
             combined_diff_parts.append(diff)
-        except Exception as e:
-            return {"ok": False, "error": f"Failed to write {file_path}: {e}"}
+        except PermissionError as e:
+            return {"ok": False, "error": f"patch(verified): permission denied writing {file_path} — {e}"}
+        except OSError as e:
+            return {"ok": False, "error": f"patch(verified): cannot write {file_path} — {e}"}
 
     return {
         "ok": True,
