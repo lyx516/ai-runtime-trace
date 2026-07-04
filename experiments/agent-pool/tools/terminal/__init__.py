@@ -59,6 +59,9 @@ def run(args: dict) -> dict:
         }
 
     # ── Build sandboxed environment ──
+    # Auto-create workdir if it doesn't exist
+    os.makedirs(cwd, exist_ok=True)
+
     env = _scrub_env(os.environ)
     env["HOME"] = str(get_workspace_root())
     env["PATH"] = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"

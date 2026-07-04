@@ -867,6 +867,9 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
             _read_scope = _spec.get("read_scope", [])
             os.environ["HERMES_WRITE_SCOPE"] = json.dumps(_write_scope)
             os.environ["HERMES_READ_SCOPE"] = json.dumps(_read_scope)
+            # Pre-create workspace directories so tools work immediately
+            for _d in _write_scope:
+                Path(PROJECT_ROOT, _d).mkdir(parents=True, exist_ok=True)
 
             # Run multi-turn session: think → tool → feedback → think → ... → decision
             result = _run_agent_session(
