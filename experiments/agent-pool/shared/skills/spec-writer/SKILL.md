@@ -21,7 +21,7 @@ description: 将模糊需求转化为结构化规格文档 spec.md
    - 输入输出定义
    - 错误处理
    - 验收标准（可量化）
-4. **必须使用 terminal 创建 spec.md**，才提交 APPROVE
+4. **必须使用 write_file 创建 spec.md**，才提交 APPROVE
 
 ## 产物
 - `spec.md`

@@ -19,7 +19,7 @@ description: 基于 spec.md 制定技术方案 plan.md
    - 数据流
    - 技术选型理由
    - 替代方案
-3. **必须使用 terminal 创建 plan.md**，才提交 APPROVE
+3. **必须使用 write_file 创建 plan.md**，才提交 APPROVE
 
 ## 产物
 - `plan.md`

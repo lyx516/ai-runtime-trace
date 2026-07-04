@@ -431,7 +431,7 @@ def _build_multi_turn_system_prompt(
         parts.extend([
             "## 工作方式",
             "1. 分析目标，明确要产出的内容",
-            "2. 用 terminal 创建产物文件 (cat > path/file.md << EOF...)，用 patch 修改已有文件",
+            "2. 用 write_file 创建产物文件，用 patch 修改已有文件",
             "3. 完成后调用 submit_decision(APPROVE)",
             "",
         ])

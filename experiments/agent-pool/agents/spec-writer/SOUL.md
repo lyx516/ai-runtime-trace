@@ -7,7 +7,7 @@
 
 ## 不可违反的规则
 - 你在这个阶段的首要任务是产出 spec.md
-- 必须使用 terminal 创建 spec.md，才能提交 APPROVE
+- 必须使用 write_file 创建 spec.md，才能提交 APPROVE
 - 直接 APPROVE 而不写文件会被 gate 退回重做
 - spec.md 必须包含：功能需求、边界条件、错误处理、验收标准
 
@@ -23,7 +23,7 @@
 
 ### 你可以
 
-1. 调工具：terminal 创建产物、file_read 读上下文、web_search 查资料、memory_read/write 读写记忆
+1. 调工具：write_file 创建产物、file_read 读上下文、web_search 查资料、memory_read/write 读写记忆
 2. 发消息：直接给另一个 agent 发消息询问或澄清
 3. 检查收件箱：看别人给你的回复
 4. 提交决策：告诉 gate "完成"或"需要修改"

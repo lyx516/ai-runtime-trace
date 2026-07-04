@@ -5,6 +5,7 @@ description: 读写文件、搜索文件和目录
 tools_allowed:
   - file_read
   - search_files
+  - write_file
   - patch
 prompt_segment: |
   - 产出文件放在项目根目录，创建独立子目录
