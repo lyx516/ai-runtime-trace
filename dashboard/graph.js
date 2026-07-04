@@ -110,10 +110,7 @@ function normalizeEvents(thinkingRows, decisionRows, messageRows, transitionRows
   return events;
 }
 
-function renderGraph(data) {
-  window._seqGraphData = data;
-  renderSequenceDiagram(data);
-}
+function renderGraph(data) { renderSequenceDiagram(data); }
 
 async function renderSequenceDiagram(g) {
   const dagEl = document.getElementById('graph-dag');
@@ -137,9 +134,7 @@ async function renderSequenceDiagram(g) {
     const events = normalizeEvents(thR, decR, msgR, transitions);
     const currentActors = new Set((states.find(s=>s.state_id===currentState)?.actors||[]));
 
-    window._seqColWidths = window._seqColWidths || {colW: 150, gateW: 120, timeW: 50};
-    const cw = window._seqColWidths;
-    const colW = cw.colW, gateW = cw.gateW, timeW = cw.timeW, rowH = 40;
+    const colW = 300, gateW = 120, timeW = 70, rowH = 40;
     let html = '';
     html += '<div style="display:flex;gap:12px;font-size:11px;color:var(--text-tertiary);margin-bottom:6px">Status: <strong style="color:var(--green)">'+g.status+'</strong>  '+states.length+' states  '+transitions.length+' transitions  '+events.length+' events</div>';
     html += '<div style="display:flex;gap:16px;margin-bottom:6px;font-size:10px;color:var(--text-secondary)">' +
@@ -147,8 +142,6 @@ async function renderSequenceDiagram(g) {
       '<span><span style="display:inline-block;width:10px;height:10px;border:2px solid var(--green);border-radius:50%;margin-right:4px"></span>decision</span>' +
       '<span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#a371f7;margin-right:4px"></span>message</span>' +
       '<span><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--text-tertiary);margin-right:4px"></span>gate</span></div>';
-    html += renderColumnSliders(colW, gateW, timeW);
-
     const totalW = timeW + agents.length*colW + gateW;
 
     // Sticky header (outside scroll container — sticky to viewport)
@@ -274,43 +267,6 @@ async function renderSequenceDiagram(g) {
 
   } catch(e) {
     dagEl.innerHTML = '<div style="color:var(--red);padding:12px">'+e.message+'</div>';
-  }
-}
-
-// ── Column Width Sliders ──
-
-function renderColumnSliders(colW, gateW, timeW) {
-  return '<div style="display:flex;gap:14px;align-items:center;margin-top:4px;margin-bottom:4px;font-size:9px;color:var(--text-tertiary);flex-wrap:wrap">' +
-    '<label style="display:flex;align-items:center;gap:4px;cursor:pointer">Agent <input type="range" min="80" max="400" value="'+colW+'" oninput="onColWidthChange(event,\'colW\')" style="width:70px;margin:0;accent-color:var(--accent)"> <span id="colW-val" style="min-width:22px">'+colW+'</span>px</label>' +
-    '<label style="display:flex;align-items:center;gap:4px;cursor:pointer">Gate <input type="range" min="60" max="200" value="'+gateW+'" oninput="onColWidthChange(event,\'gateW\')" style="width:60px;margin:0;accent-color:var(--accent)"> <span id="gateW-val" style="min-width:22px">'+gateW+'</span>px</label>' +
-    '<label style="display:flex;align-items:center;gap:4px;cursor:pointer">Time <input type="range" min="35" max="120" value="'+timeW+'" oninput="onColWidthChange(event,\'timeW\')" style="width:55px;margin:0;accent-color:var(--accent)"> <span id="timeW-val" style="min-width:22px">'+timeW+'</span>px</label>' +
-    '<button onclick="resetColumnWidths()" style="border:1px solid var(--border);background:rgba(255,255,255,0.04);color:var(--text-tertiary);border-radius:4px;font-size:8px;padding:1px 6px;cursor:pointer">reset</button>' +
-    '</div>';
-}
-
-function onColWidthChange(e, key) {
-  const v = parseInt(e.target.value);
-  if (!window._seqColWidths) window._seqColWidths = {colW: 150, gateW: 120, timeW: 50};
-  window._seqColWidths[key] = v;
-  const span = document.getElementById(key + '-val');
-  if (span) span.textContent = v;
-  debounceReRender();
-}
-
-function resetColumnWidths() {
-  window._seqColWidths = {colW: 150, gateW: 120, timeW: 50};
-  reRenderSequence();
-}
-
-let _colWidthDebounce = null;
-function debounceReRender() {
-  if (_colWidthDebounce) clearTimeout(_colWidthDebounce);
-  _colWidthDebounce = setTimeout(reRenderSequence, 120);
-}
-
-function reRenderSequence() {
-  if (window._seqGraphData) {
-    renderSequenceDiagram(window._seqGraphData);
   }
 }
 
