@@ -1,15 +1,34 @@
-"""代码执行工具 — 在独立子进程中运行 Python 代码。
+"""Code execution tool — runs Python in a sandboxed subprocess.
 
-安全约束:
-- 临时文件写入后立即执行、执行后删除
-- 超时默认 15s，最长 60s
-- 空代码块立即拒绝
-- 返回值截断: stdout 3000 chars, stderr 1000 chars
+Sandbox:
+- cwd forced to workspace root
+- HOME set to workspace root
+- SENSITIVE env vars stripped (*_API_KEY, *_TOKEN, *_SECRET, etc.)
+- PYTHONDONTWRITEBYTECODE=1 (no .pyc pollution)
+- PATH sanitized
+- Temp file auto-deleted after execution
 """
 
+import os
 import subprocess
 import tempfile
-import os
+
+# Env var substrings that indicate secrets — stripped from child env
+_SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH", "CREDENTIAL", "DSN")
+_SAFE_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM", "SHELL", "LOGNAME",
+                  "TMPDIR", "TMP", "TEMP", "XDG_", "PYTHONPATH", "VIRTUAL_ENV",
+                  "HERMES_WORKSPACE", "HERMES_WRITE", "HERMES_READ", "HERMES_FLOW")
+
+
+def _scrub_env(raw: dict) -> dict:
+    clean = {}
+    for k, v in raw.items():
+        if any(s in k.upper() for s in _SECRET_SUBSTRINGS):
+            continue
+        if not any(k.startswith(p) for p in _SAFE_PREFIXES):
+            continue
+        clean[k] = v
+    return clean
 
 
 def run(args: dict) -> dict:
@@ -23,15 +42,24 @@ def run(args: dict) -> dict:
                      "Provide the Python code to execute. Do not retry with empty code.",
         }
 
+    from tools._scope import get_workspace_root
+
+    ws_root = str(get_workspace_root())
+
+    env = _scrub_env(os.environ)
+    env["HOME"] = ws_root
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["PATH"] = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+    tmp = ""
     try:
-        tmp = ""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write(code)
             tmp = f.name
         result = subprocess.run(
             ["python3", tmp],
             capture_output=True, text=True, timeout=timeout,
-            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            cwd=ws_root, env=env,
         )
         os.unlink(tmp)
         return {

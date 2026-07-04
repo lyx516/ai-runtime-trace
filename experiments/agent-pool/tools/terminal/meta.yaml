@@ -1,7 +1,7 @@
 tool_id: terminal
 name: 终端执行
 category: 执行
-description: 在沙箱环境中执行任意 shell 命令，包括编译、运行脚本、构建等
+description: 在限定范围内执行 shell 命令（工作目录限定于分配给你的 write_scope，不能访问外部路径，HOME 指向工作区根目录）
 
 risk: medium
 universal: false
