@@ -239,12 +239,20 @@ class RuntimeLoop:
         return state_dict.get("actors", [])
 
     def _get_agent_soul(self, role_id: str) -> str:
-        """Get the soul/personality from the agent bindings."""
+        """Get the soul/personality from persisted agent metadata."""
         conn = self.store.connect()
         run_row = conn.execute(
-            "SELECT agent_bindings FROM runs WHERE run_id = ?",
+            "SELECT agent_specs, agent_bindings FROM runs WHERE run_id = ?",
             (self.run_id,),
         ).fetchone()
+        if run_row and run_row["agent_specs"]:
+            try:
+                specs = json.loads(run_row["agent_specs"])
+                soul = specs.get(role_id, {}).get("soul", "")
+                if soul:
+                    return soul
+            except (json.JSONDecodeError, KeyError, AttributeError):
+                pass
         if run_row and run_row["agent_bindings"]:
             try:
                 agents = json.loads(run_row["agent_bindings"])
@@ -282,6 +290,7 @@ class RuntimeLoop:
                 state_id=run.current_state_id,
             )
             context["session_id"] = session_id
+            context["run_dir"] = str(self.store.run_dir)
             # Inject round counter for the delegate goal
             context["_round_counter"] = run.round_counters.get(run.current_state_id, 0)
         except (ValueError, Exception) as e:

@@ -5,8 +5,8 @@ Usage:
     debate <task description>
     debate "实现一个向量数据库，索引性能为先"
 
-The command uses the current working directory as the project root.
-Flow runs, artifacts, and workspaces are created relative to cwd.
+The command uses the repository root as the default project root.
+Set HERMES_FLOW_PROJECT_ROOT to override.
 """
 
 import os
@@ -17,7 +17,7 @@ from pathlib import Path
 def main():
     # Locate the package root (where agents/, tools/, shared/ live)
     pkg_dir = Path(__file__).resolve().parent
-    project_root = os.getcwd()
+    project_root = os.environ.get("HERMES_FLOW_PROJECT_ROOT") or str(pkg_dir.parent.parent)
 
     # Ensure hermes_flow is importable (in case not pip-installed)
     hermes_flow_dir = pkg_dir.parent.parent

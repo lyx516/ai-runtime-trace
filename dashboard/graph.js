@@ -52,6 +52,7 @@ function cleanupSequenceUi() {
   window._seqArrows = [];
   window._sliderCurrentIdx = -1;
   window._ctxExpanded = false;
+  if (typeof window.clearAgentContextCache === 'function') window.clearAgentContextCache();
 }
 
 function normalizeEvents(thinkingRows, decisionRows, messageRows, transitionRows) {
@@ -467,6 +468,9 @@ function initSlider(eventCount) {
       const focus = contextFocusIndex(items, idx);
       html += '<div class="ctx-context-col" data-role="'+escapeHtml(role)+'" style="width:'+w+'px;flex-shrink:0;border-left:1px solid var(--border);padding:6px;max-height:42vh;overflow:auto;scroll-behavior:auto">';
       html += '<div style="font-weight:600;color:'+(role==='gate'?'var(--text-tertiary)':'var(--accent)')+';margin-bottom:6px">'+escapeHtml(role)+' · '+items.length+'</div>';
+      if (role !== 'gate') {
+        html += '<div class="agent-full-context-slot" data-role="'+escapeHtml(role)+'" data-idx="'+idx+'" style="margin-bottom:8px"></div>';
+      }
       if (!items.length) html += '<div style="color:var(--text-tertiary)">No context yet</div>';
       items.forEach((item, n) => {
         const e = item.event;
@@ -481,6 +485,7 @@ function initSlider(eventCount) {
     html += '</div>';
     row.innerHTML = html;
     row.style.display = 'block';
+    if (typeof window.hydrateAgentFullContextSlots === 'function') window.hydrateAgentFullContextSlots();
     requestAnimationFrame(() => {
       row.querySelectorAll('.ctx-context-col').forEach(col => {
         const current = col.querySelector('.ctx-context-item.current');

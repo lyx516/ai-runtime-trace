@@ -37,7 +37,7 @@ def test_init_schema_creates_all_tables(store: RuntimeStore) -> None:
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
     ).fetchall()}
     expected = {"runs", "agents", "states", "messages", "inboxes", "artifacts",
-                "decisions", "transitions", "audit_events"}
+                "decisions", "transitions", "audit_events", "llm_input_snapshots"}
     assert expected.issubset(tables), f"Missing tables: {expected - tables}"
 
 
@@ -62,6 +62,73 @@ def test_init_schema_records_initial_audit_event(store: RuntimeStore) -> None:
     audit = store.export_audit(run.run_id)
     assert len(audit) >= 1
     assert audit[0]["event_type"] == "run_created"
+
+
+def test_create_run_persists_agent_specs(store: RuntimeStore) -> None:
+    """Creating a run must persist full agent metadata used to build prompts."""
+    store.run_dir.mkdir(parents=True, exist_ok=True)
+    store.init_schema()
+    bindings = [
+        AgentBinding(role_id="planner", profile_name="fp", session_id="", memory_mode=MemoryMode.RUN_ISOLATED),
+    ]
+    agent_specs = {
+        "planner": {
+            "role_id": "planner",
+            "display_name": "Planner",
+            "profile_name": "fp",
+            "soul": "Plan with evidence.",
+            "skills": ["speckit-plan"],
+            "toolsets": ["file", "terminal"],
+            "read_scope": ["spec.md"],
+            "write_scope": ["artifacts/plan.md"],
+            "workspace_mode": "isolated",
+            "memory_mode": "run_isolated",
+        }
+    }
+
+    run = store.create_run(
+        flow_id="test", flow_version="1", initial_state_id="PLAN",
+        agent_bindings=bindings, memory_modes={"planner": "run_isolated"},
+        artifact_root=str(store.run_dir / "artifacts"),
+        states_json={"PLAN": {"actors": ["planner"]}},
+        agent_specs=agent_specs,
+    )
+
+    assert store.load_agent_specs(run.run_id)["planner"]["skills"] == ["speckit-plan"]
+    assert store.load_agent_spec(run.run_id, "planner")["soul"] == "Plan with evidence."
+
+
+def test_llm_input_snapshot_round_trip(store: RuntimeStore) -> None:
+    """LLM input snapshots must preserve exact messages and omit secrets."""
+    store.run_dir.mkdir(parents=True, exist_ok=True)
+    store.init_schema()
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "user prompt"},
+    ]
+    request = {
+        "model": "test-model",
+        "messages": messages,
+        "headers": {"Authorization": "Bearer secret", "Content-Type": "application/json"},
+    }
+
+    snapshot_id = store.append_llm_input_snapshot(
+        run_id="run1",
+        session_id="sess1",
+        role_id="planner",
+        state_id="PLAN",
+        provider="https://example.invalid/v1",
+        model="test-model",
+        messages=messages,
+        request=request,
+        context_packet={"session_id": "sess1"},
+    )
+    loaded = store.load_llm_input_snapshots("run1", role_id="planner", state_id="PLAN")
+
+    assert loaded[0]["snapshot_id"] == snapshot_id
+    assert loaded[0]["messages"] == messages
+    assert loaded[0]["request"]["headers"]["Authorization"] == "[REDACTED]"
+    assert loaded[0]["context_packet"]["session_id"] == "sess1"
 
 
 def test_transaction_rollback(store: RuntimeStore) -> None:

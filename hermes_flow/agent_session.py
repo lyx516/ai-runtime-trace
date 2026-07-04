@@ -144,6 +144,7 @@ def prepare_context(
             visible_artifacts = []
 
         session_id = _new_id()
+        agent_metadata = store.load_agent_spec(run_id, role_id)
 
         context = {
             "run_id": run_id,
@@ -156,6 +157,12 @@ def prepare_context(
             "pending_decisions": pending_decisions,
             "visible_artifacts": visible_artifacts,
             "available_tools": ["inbox_read", "message_send", "submit_decision", "query_status"],
+            "agent_metadata": agent_metadata,
+            "skills": agent_metadata.get("skills", []),
+            "toolsets": agent_metadata.get("toolsets", []),
+            "read_scope": agent_metadata.get("read_scope", []),
+            "write_scope": agent_metadata.get("write_scope", []),
+            "workspace_mode": agent_metadata.get("workspace_mode", ""),
             "discussion_history": [],
             "created_at": _now(),
         }

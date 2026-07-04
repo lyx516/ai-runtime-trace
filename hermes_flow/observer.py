@@ -368,6 +368,11 @@ class SSEHandler(http.server.BaseHTTPRequestHandler):
                     data = self._get_analyze(run_id)
                 elif resource == "agent-sessions":
                     data = self._get_agent_sessions(run_id)
+                elif resource == "agent-context":
+                    role_id = qs.get("role_id", [""])[0]
+                    state_id = qs.get("state_id", [""])[0]
+                    at = qs.get("at", [""])[0]
+                    data = self._get_agent_context(run_id, role_id, state_id, at)
                 elif resource == "thinking":
                     role_id = qs.get("role_id", [None])[0]
                     state_id = qs.get("state_id", [None])[0]
@@ -600,6 +605,227 @@ class SSEHandler(http.server.BaseHTTPRequestHandler):
             )
         except Exception as e:
             return [{"error": str(e)}]
+
+    def _decode_json_value(self, value: Any, default: Any) -> Any:
+        """Decode JSON stored in SQLite TEXT columns."""
+        if value is None or value == "":
+            return default
+        if isinstance(value, (dict, list)):
+            return value
+        try:
+            return json.loads(value)
+        except (TypeError, json.JSONDecodeError):
+            return default
+
+    def _decode_row_json_fields(self, row: dict, fields: list[str]) -> dict:
+        decoded = dict(row)
+        for field in fields:
+            if field in decoded:
+                fallback: Any = [] if field.endswith("recipients") or field == "artifacts" else {}
+                decoded[field] = self._decode_json_value(decoded.get(field), fallback)
+        return decoded
+
+    def _message_visible_to_role(self, message: dict, role_id: str) -> bool:
+        if not role_id:
+            return False
+        if message.get("from_role") == role_id:
+            return True
+        if message.get("visibility") in {"all", "group"}:
+            return True
+        intended = self._decode_json_value(message.get("intended_recipients"), [])
+        authorized = self._decode_json_value(message.get("authorized_recipients"), [])
+        return role_id in intended or role_id in authorized
+
+    def _rows_before(self, sql: str, params: tuple, at: str) -> tuple[str, tuple]:
+        if at:
+            return sql + " AND created_at <= ?", (*params, at)
+        return sql, params
+
+    def _load_session_contexts(
+        self,
+        store: Any,
+        role_id: str,
+        state_id: str,
+        at: str,
+    ) -> list[dict]:
+        """Load persisted AgentContextPacket files for one role/state."""
+        sessions_dir = Path(store.run_dir) / "sessions"
+        if not sessions_dir.exists():
+            return []
+        contexts = []
+        for path in sorted(sessions_dir.glob("*.context.json")):
+            try:
+                packet = json.loads(path.read_text())
+            except Exception:
+                continue
+            if role_id and packet.get("role_id") != role_id:
+                continue
+            if state_id and packet.get("state_id") != state_id:
+                continue
+            created_at = packet.get("created_at", "")
+            if at and created_at and created_at > at:
+                continue
+            contexts.append({
+                "session_id": packet.get("session_id", path.stem.replace(".context", "")),
+                "role_id": packet.get("role_id", ""),
+                "state_id": packet.get("state_id", ""),
+                "created_at": created_at,
+                "context_file": path.name,
+                "context": packet,
+            })
+        contexts.sort(key=lambda c: c.get("created_at") or "")
+        return contexts
+
+    def _get_agent_context(
+        self,
+        run_id: str,
+        role_id: str,
+        state_id: str = "",
+        at: str = "",
+    ) -> dict:
+        """Return full context visible to an agent around a selected timeline point."""
+        if not role_id:
+            return {"error": "role_id required"}
+        store = self._read_store(run_id)
+        if not store:
+            return {"error": "run not found"}
+
+        try:
+            conn = store.connect()
+            if not state_id:
+                status = self._get_run_status(run_id) or {}
+                state_id = status.get("current_state_id", "")
+
+            state_row = conn.execute(
+                "SELECT state_json FROM states WHERE run_id=? AND state_id=?",
+                (run_id, state_id),
+            ).fetchone()
+            state_definition = self._decode_json_value(
+                state_row["state_json"] if state_row else "{}", {}
+            )
+
+            inbox_rows = conn.execute(
+                """SELECT i.row_id AS inbox_row_id, i.role_id, i.generated_at,
+                          m.*
+                   FROM inboxes i
+                   JOIN messages m ON i.message_id = m.message_id
+                   WHERE i.run_id=? AND i.role_id=?
+                   ORDER BY m.created_at""",
+                (run_id, role_id),
+            ).fetchall()
+            json_fields = [
+                "intended_recipients", "authorized_recipients",
+                "recipient_availability", "artifacts",
+            ]
+            inbox_messages = [self._decode_row_json_fields(dict(r), json_fields) for r in inbox_rows]
+
+            msg_sql, msg_params = self._rows_before(
+                "SELECT * FROM messages WHERE run_id=?", (run_id,), at,
+            )
+            message_rows = conn.execute(msg_sql + " ORDER BY created_at", msg_params).fetchall()
+            visible_messages = []
+            for row in message_rows:
+                message = self._decode_row_json_fields(dict(row), json_fields)
+                if self._message_visible_to_role(message, role_id):
+                    visible_messages.append(message)
+
+            dec_sql, dec_params = self._rows_before(
+                "SELECT * FROM decisions WHERE run_id=?", (run_id,), at,
+            )
+            decision_rows = conn.execute(dec_sql + " ORDER BY created_at", dec_params).fetchall()
+            decisions_seen = [
+                self._decode_row_json_fields(dict(r), ["artifacts"])
+                for r in decision_rows
+                if not state_id or r["state_id"] == state_id
+            ]
+
+            thinking = store.load_thinking_events(
+                run_id,
+                role_id=role_id,
+                state_id=state_id or None,
+                limit=500,
+            )
+            if at:
+                thinking = [t for t in thinking if not t.get("created_at") or t["created_at"] <= at]
+
+            trans_sql, trans_params = self._rows_before(
+                "SELECT * FROM transitions WHERE run_id=? AND to_state_id=?",
+                (run_id, state_id),
+                at,
+            )
+            transition_rows = conn.execute(trans_sql + " ORDER BY row_id", trans_params).fetchall()
+            transitions = [dict(r) for r in transition_rows]
+            round_counter = max((t.get("round_counter") or 0 for t in transitions), default=0)
+
+            audit_sql, audit_params = self._rows_before(
+                "SELECT * FROM audit_events WHERE run_id=? AND actor=?",
+                (run_id, role_id),
+                at,
+            )
+            audit_rows = conn.execute(audit_sql + " ORDER BY created_at", audit_params).fetchall()
+            audit_events = []
+            for row in audit_rows:
+                event = dict(row)
+                event["payload"] = self._decode_json_value(event.get("payload_json"), {})
+                event.pop("payload_json", None)
+                audit_events.append(event)
+
+            session_contexts = self._load_session_contexts(store, role_id, state_id, at)
+            latest_context = session_contexts[-1]["context"] if session_contexts else None
+            llm_snapshots = store.load_llm_input_snapshots(
+                run_id,
+                role_id=role_id,
+                state_id=state_id or None,
+                at=at,
+                limit=100,
+            )
+            llm_input = llm_snapshots[-1] if llm_snapshots else {
+                "source": "session_file_fallback" if latest_context else "reconstructed_fallback",
+                "snapshot_id": None,
+                "run_id": run_id,
+                "session_id": (latest_context or {}).get("session_id", ""),
+                "role_id": role_id,
+                "state_id": state_id,
+                "provider": "",
+                "model": "",
+                "messages": ([{"role": "user", "content": latest_context.get("agent_prompt", "")}] if latest_context and latest_context.get("agent_prompt") else []),
+                "request": {},
+                "context_packet": latest_context or {},
+                "created_at": (latest_context or {}).get("created_at", ""),
+            }
+            reconstructed_context = {
+                "run_id": run_id,
+                "role_id": role_id,
+                "state_id": state_id,
+                "state_description": state_definition.get("description", ""),
+                "gate_info": state_definition.get("gate"),
+                "round_counter": round_counter,
+                "inbox_messages": inbox_messages,
+                "visible_messages": visible_messages,
+                "pending_decisions": decisions_seen,
+                "thinking_events": thinking,
+                "available_tools": ["inbox_read", "message_send", "submit_decision", "query_status"],
+            }
+
+            return {
+                "run_id": run_id,
+                "role_id": role_id,
+                "state_id": state_id,
+                "selected_at": at,
+                "round_counter": round_counter,
+                "state_definition": state_definition,
+                "inbox_messages": inbox_messages,
+                "visible_messages": visible_messages,
+                "decisions_seen": decisions_seen,
+                "thinking_events": thinking,
+                "audit_events": audit_events,
+                "session_contexts": session_contexts,
+                "context_packet": latest_context or reconstructed_context,
+                "context_source": "session_file" if latest_context else "reconstructed",
+                "llm_input": llm_input,
+            }
+        except Exception as e:
+            return {"error": str(e)}
 
     def _serve_pool_api(self):
         """Serve agent pool data from the project's agents/ directory."""

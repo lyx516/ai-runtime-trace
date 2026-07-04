@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS runs (
     updated_at TEXT NOT NULL,
     completed_at TEXT,
     agent_bindings TEXT NOT NULL DEFAULT '[]',
+    agent_specs TEXT NOT NULL DEFAULT '{}',
     memory_modes TEXT NOT NULL DEFAULT '{}',
     artifact_root TEXT NOT NULL,
     display_name TEXT
@@ -169,6 +170,21 @@ CREATE TABLE IF NOT EXISTS thinking_events (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_thinking_run  ON thinking_events(run_id, created_at);
+
+CREATE TABLE IF NOT EXISTS llm_input_snapshots (
+    row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    session_id TEXT NOT NULL DEFAULT '',
+    role_id TEXT NOT NULL,
+    state_id TEXT NOT NULL DEFAULT '',
+    provider TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    messages_json TEXT NOT NULL DEFAULT '[]',
+    request_json TEXT NOT NULL DEFAULT '{}',
+    context_packet_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_llm_input_run ON llm_input_snapshots(run_id, role_id, state_id, created_at);
 """
 
 
@@ -213,6 +229,10 @@ class RuntimeStore:
         # Migration: add display_name column to existing databases
         try:
             conn.execute("ALTER TABLE runs ADD COLUMN display_name TEXT")
+        except Exception:
+            pass  # Column already exists
+        try:
+            conn.execute("ALTER TABLE runs ADD COLUMN agent_specs TEXT NOT NULL DEFAULT '{}'")
         except Exception:
             pass  # Column already exists
         conn.commit()
@@ -304,6 +324,101 @@ class RuntimeStore:
             result.append(d)
         return result
 
+    def load_agent_specs(self, run_id: str) -> dict[str, Any]:
+        """Load full per-role agent metadata persisted at run creation."""
+        conn = self.connect()
+        row = conn.execute("SELECT agent_specs FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+        if row is None:
+            return {}
+        try:
+            specs = json_loads(row["agent_specs"])
+        except Exception:
+            return {}
+        return specs if isinstance(specs, dict) else {}
+
+    def load_agent_spec(self, run_id: str, role_id: str) -> dict[str, Any]:
+        """Load one role's persisted agent metadata, or an empty dict."""
+        spec = self.load_agent_specs(run_id).get(role_id, {})
+        return spec if isinstance(spec, dict) else {}
+
+    def append_llm_input_snapshot(
+        self,
+        run_id: str,
+        session_id: str,
+        role_id: str,
+        state_id: str,
+        provider: str,
+        model: str,
+        messages: list[dict[str, Any]],
+        request: dict[str, Any],
+        context_packet: dict[str, Any],
+    ) -> int:
+        """Persist the exact LLM input payload, with credentials redacted."""
+        conn = self.connect()
+        cur = conn.execute(
+            """INSERT INTO llm_input_snapshots (
+                   run_id, session_id, role_id, state_id, provider, model,
+                   messages_json, request_json, context_packet_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                run_id,
+                session_id,
+                role_id,
+                state_id,
+                provider,
+                model,
+                json_dumps(messages or []),
+                json_dumps(_redact_request_secrets(request)),
+                json_dumps(context_packet or {}),
+                _now(),
+            ),
+        )
+        conn.commit()
+        return cur.lastrowid or 0
+
+    def load_llm_input_snapshots(
+        self,
+        run_id: str,
+        role_id: str | None = None,
+        state_id: str | None = None,
+        at: str = "",
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Load LLM input snapshots for a run, newest last."""
+        sql = "SELECT * FROM llm_input_snapshots WHERE run_id=?"
+        params: list[Any] = [run_id]
+        if role_id:
+            sql += " AND role_id=?"
+            params.append(role_id)
+        if state_id:
+            sql += " AND state_id=?"
+            params.append(state_id)
+        if at:
+            sql += " AND created_at <= ?"
+            params.append(at)
+        sql += " ORDER BY created_at ASC, row_id ASC LIMIT ?"
+        params.append(limit)
+
+        rows = self.connect().execute(sql, params).fetchall()
+        snapshots = []
+        for row in rows:
+            d = dict(row)
+            snapshots.append({
+                "source": "llm_input_snapshot",
+                "snapshot_id": d.get("row_id"),
+                "run_id": d.get("run_id", ""),
+                "session_id": d.get("session_id", ""),
+                "role_id": d.get("role_id", ""),
+                "state_id": d.get("state_id", ""),
+                "provider": d.get("provider", ""),
+                "model": d.get("model", ""),
+                "messages": _json_loads_fallback(d.get("messages_json"), []),
+                "request": _json_loads_fallback(d.get("request_json"), {}),
+                "context_packet": _json_loads_fallback(d.get("context_packet_json"), {}),
+                "created_at": d.get("created_at", ""),
+            })
+        return snapshots
+
     # ── Create run ────────────────────────────────────────────────────────
 
     def create_run(
@@ -317,6 +432,7 @@ class RuntimeStore:
         states_json: dict[str, Any],
         override_run_id: str | None = None,
         display_name: str | None = None,
+        agent_specs: dict[str, Any] | None = None,
     ) -> FlowRun:
         """Initialize a new run directory and SQLite database."""
         tracer = get_tracer()
@@ -349,13 +465,13 @@ class RuntimeStore:
             conn = self.connect()
             conn.execute(
                 """INSERT INTO runs (run_id, flow_id, flow_version, status, current_state_id,
-                   round_counters, created_at, updated_at, agent_bindings, memory_modes,
-                   artifact_root, display_name)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   round_counters, created_at, updated_at, agent_bindings, agent_specs,
+                   memory_modes, artifact_root, display_name)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (run.run_id, run.flow_id, run.flow_version, run.status.value,
                  run.current_state_id, json_dumps(run.round_counters),
                  run.created_at, run.updated_at, json_dumps([to_dict(b) for b in run.agent_bindings]),
-                 json_dumps(run.memory_modes), run.artifact_root, display_name),
+                 json_dumps(agent_specs or {}), json_dumps(run.memory_modes), run.artifact_root, display_name),
             )
 
             # Persist states
@@ -646,6 +762,31 @@ def json_loads(s: str) -> Any:
     if not s:
         return {} if s == "" else s
     return json.loads(s)
+
+
+def _json_loads_fallback(s: Any, fallback: Any) -> Any:
+    try:
+        if not isinstance(s, str) or not s:
+            return fallback
+        return json_loads(s)
+    except Exception:
+        return fallback
+
+
+def _redact_request_secrets(request: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of an LLM request payload with secret header values removed."""
+    if not isinstance(request, dict):
+        return {}
+    safe: dict[str, Any] = {}
+    for key, value in request.items():
+        if key.lower() == "headers" and isinstance(value, dict):
+            safe[key] = {
+                h: "[REDACTED]" if h.lower() in {"authorization", "api-key", "x-api-key"} else v
+                for h, v in value.items()
+            }
+        else:
+            safe[key] = value
+    return safe
 
 
 # ── Row converters ──────────────────────────────────────────────────────────

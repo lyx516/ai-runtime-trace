@@ -25,10 +25,10 @@ from typing import Any, Optional
 
 # Script location (agents, tools, skills live here)
 _SCRIPT_DIR = Path(__file__).resolve().parent
-# Runtime cwd (where files are searched/created)
-PROJECT_ROOT = os.getcwd()
 # Project root (where hermes_flow package lives)
 _PROJECT_ROOT_DIR = _SCRIPT_DIR.parent.parent
+# Runtime project root (where runs/artifacts are searched/created)
+PROJECT_ROOT = os.environ.get("HERMES_FLOW_PROJECT_ROOT") or str(_PROJECT_ROOT_DIR)
 AGENTS_DIR = _SCRIPT_DIR / "agents"
 SHARED_SKILLS_DIR = _SCRIPT_DIR / "shared" / "skills"
 OUTPUT_DIR = _SCRIPT_DIR / "generated"

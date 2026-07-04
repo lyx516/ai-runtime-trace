@@ -133,6 +133,7 @@ def flow_init(
         for role_id, role in flow.agents.items()
     ]
     memory_modes = {role_id: role.memory_mode.value for role_id, role in flow.agents.items()}
+    agent_specs = {role_id: to_dict(role) for role_id, role in flow.agents.items()}
 
     # Build states JSON for persistence
     states_json = {}
@@ -149,6 +150,7 @@ def flow_init(
         states_json=states_json,
         override_run_id=run_id,
         display_name=run_name or None,
+        agent_specs=agent_specs,
     )
 
     result = ok_result({

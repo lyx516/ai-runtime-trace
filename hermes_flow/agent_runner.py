@@ -201,6 +201,38 @@ def build_agent_prompt(context: dict[str, Any]) -> str:
 
 # ── LLM-powered decision engine ─────────────────────────────────────────
 
+def _persist_llm_input_snapshot(
+    context: dict[str, Any],
+    provider: str,
+    model: str,
+    messages: list[dict[str, Any]],
+    request: dict[str, Any],
+) -> None:
+    """Best-effort capture of the exact payload sent to the LLM provider."""
+    run_id = context.get("run_id", "")
+    run_dir = context.get("run_dir", "")
+    if not run_id or not run_dir:
+        return
+    try:
+        from hermes_flow.storage import RuntimeStore
+
+        store = RuntimeStore(Path(run_dir))
+        store.init_schema()
+        store.append_llm_input_snapshot(
+            run_id=run_id,
+            session_id=context.get("session_id", ""),
+            role_id=context.get("role_id", ""),
+            state_id=context.get("state_id", ""),
+            provider=provider,
+            model=model,
+            messages=messages,
+            request=request,
+            context_packet=context,
+        )
+    except Exception:
+        # Observability must never break the agent's actual LLM call.
+        return
+
 def _llm_decide_actions(
     context: dict[str, Any],
     inbox_msgs: list[dict[str, Any]],
@@ -239,12 +271,28 @@ def _llm_decide_actions(
         )
         model = os.environ.get("AGENT_LLM_MODEL", "openai/gpt-4o-mini")
 
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ]
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "HTTP-Referer": "https://github.com/hermes-flow",
+            "X-Title": "Hermes Flow Agent",
+        }
+        request_payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0.7,
+            "max_tokens": 300,
+            "headers": headers,
+            "url": f"{base_url}/chat/completions",
+        }
+        _persist_llm_input_snapshot(context, base_url, model, messages, request_payload)
         body = _json.dumps({
             "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt},
-            ],
+            "messages": messages,
             "temperature": 0.7,
             "max_tokens": 300,
         }).encode()
@@ -252,12 +300,7 @@ def _llm_decide_actions(
         req = urllib.request.Request(
             f"{base_url}/chat/completions",
             data=body,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
-                "HTTP-Referer": "https://github.com/hermes-flow",
-                "X-Title": "Hermes Flow Agent",
-            },
+            headers=headers,
         )
         resp = urllib.request.urlopen(req, timeout=30)
         result = _json.loads(resp.read())
