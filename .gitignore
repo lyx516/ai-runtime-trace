@@ -13,6 +13,12 @@ venv/
 **/.hermes-flow/runs/
 experiments/*/fsm_run_id.txt
 
+# Auto-generated artifacts
+experiments/agent-pool/generated/
+experiments/agent-pool/agents/*/skills/
+experiments/agent-pool/agents/*/Memory.md
+experiments/agent-pool/plan.md
+
 # OS
 .DS_Store
 Thumbs.db
@@ -20,6 +26,11 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Environment
+.env
+.env.local
+.env.*
 
 # Logs
 *.log

@@ -1,7 +1,32 @@
 function parseRecipients(d) {
-  const r = d.intended_recipients;
-  if (Array.isArray(r)) return r;
-  if (typeof r === 'string') try { return JSON.parse(r); } catch(e) { return [r]; }
+  if (!d || typeof d !== 'object') return [];
+  const readList = v => {
+    if (Array.isArray(v)) return v;
+    if (typeof v === 'string') {
+      if (!v) return [];
+      try {
+        const parsed = JSON.parse(v);
+        return Array.isArray(parsed) ? parsed : [parsed];
+      } catch(e) {
+        return [v];
+      }
+    }
+    return [];
+  };
+  const candidates = [
+    d.intended_recipients,
+    d.authorized_recipients,
+    d.recipients,
+    d.output && d.output.authorized_recipients,
+    d.output && d.output.recipients,
+    d.output && d.output.intended_recipients,
+    d.inputs && d.inputs.intended_recipients,
+    d.inputs && d.inputs.recipients,
+  ];
+  for (const c of candidates) {
+    const values = readList(c).filter(Boolean);
+    if (values.length) return values;
+  }
   return [];
 }
 
@@ -15,13 +40,80 @@ function formatJson(v) {
   try { return JSON.stringify(v, null, 2); } catch(e) { return String(v); }
 }
 
+function cleanupSequenceUi() {
+  if (typeof window._seqCleanup === 'function') {
+    try { window._seqCleanup(); } catch(e) {}
+  }
+  window._seqCleanup = null;
+  document.getElementById('slider-track')?.remove();
+  document.getElementById('slider-thumb')?.remove();
+  document.getElementById('seq-current-highlight')?.remove();
+  window._seqEvents = [];
+  window._seqArrows = [];
+  window._sliderCurrentIdx = -1;
+  window._ctxExpanded = false;
+}
+
+function normalizeEvents(thinkingRows, decisionRows, messageRows, transitionRows) {
+  const events = [];
+  const decisionsById = new Map();
+  const messagesById = new Map();
+
+  (decisionRows || []).forEach(d => {
+    const event = {
+      ts: d.created_at || '',
+      type: 'decision',
+      role: d.role_id,
+      state: d.state_id || '',
+      data: {...d, thinking_events: []},
+      source: 'decisions',
+    };
+    if (d.decision_id) decisionsById.set(d.decision_id, event);
+    events.push(event);
+  });
+
+  (messageRows || []).forEach(m => {
+    const event = {
+      ts: m.created_at || '',
+      type: 'message',
+      role: m.from_role || m.role_id,
+      state: m.state_id || '',
+      data: {...m, thinking_events: []},
+      source: 'messages',
+    };
+    if (m.message_id) messagesById.set(m.message_id, event);
+    events.push(event);
+  });
+
+  (thinkingRows || []).forEach(t => {
+    const st = t.step_type || '';
+    if (st === 'submit_decision') {
+      const id = t.output && t.output.decision_id;
+      const canonical = id ? decisionsById.get(id) : null;
+      if (canonical) canonical.data.thinking_events.push(t);
+      else events.push({ts:t.created_at||'', type:'toolCall', role:t.role_id, state:t.state_id||'', data:t, source:'thinking'});
+    } else if (st === 'send_message') {
+      const id = t.output && t.output.message_id;
+      const canonical = id ? messagesById.get(id) : null;
+      if (canonical) canonical.data.thinking_events.push(t);
+      else events.push({ts:t.created_at||'', type:'toolCall', role:t.role_id, state:t.state_id||'', data:t, source:'thinking'});
+    } else {
+      events.push({ts:t.created_at||'', type:'toolCall', role:t.role_id, state:t.state_id||'', data:t, source:'thinking'});
+    }
+  });
+
+  (transitionRows || []).forEach(t => {
+    events.push({ts:t.created_at||t.ts||'', type:'transition', role:'gate', state:t.to || t.to_state_id || '', data:t, source:'transitions'});
+  });
+  events.sort((a,b)=>(a.ts||'').localeCompare(b.ts||''));
+  return events;
+}
+
 function renderGraph(data) { renderSequenceDiagram(data); }
 
 async function renderSequenceDiagram(g) {
   const dagEl = document.getElementById('graph-dag');
-  document.getElementById('slider-track')?.remove();
-  document.getElementById('slider-thumb')?.remove();
-  document.getElementById('seq-current-highlight')?.remove();
+  cleanupSequenceUi();
   dagEl.innerHTML = '<div style="color:var(--text-tertiary);padding:12px">Loading timeline ...</div>';
   const states = g.states || [];
   if (!states.length) { dagEl.innerHTML = '<div class="empty-state">No state data</div>'; return; }
@@ -38,17 +130,7 @@ async function renderSequenceDiagram(g) {
     const seen = new Set();
     states.forEach(s=>(s.actors||[]).forEach(a=>{if(!seen.has(a)){seen.add(a);agents.push(a);}}));
 
-    const events = [];
-    (thR||[]).forEach(t => {
-      const st = (t.step_type||'');
-      if (st === 'submit_decision') events.push({ts:t.created_at||'', type:'decision', role:t.role_id, state:t.state_id||'', data:t, source:'thinking'});
-      else if (st === 'send_message') events.push({ts:t.created_at||'', type:'message', role:t.role_id, state:'', data:t, source:'thinking'});
-      else events.push({ts:t.created_at||'', type:'toolCall', role:t.role_id, state:t.state_id||'', data:t, source:'thinking'});
-    });
-    (decR||[]).forEach(d => events.push({ts:d.created_at||'', type:'decision', role:d.role_id, state:d.state_id||'', data:d, source:'decisions'}));
-    (msgR||[]).forEach(m => events.push({ts:m.created_at||'', type:'message', role:m.from_role||m.role_id, state:'', data:m, source:'messages'}));
-    transitions.forEach(t => events.push({ts:t.created_at||t.ts||'', type:'transition', role:'gate', state:'', data:t, source:'transitions'}));
-    events.sort((a,b)=>(a.ts||'').localeCompare(b.ts||''));
+    const events = normalizeEvents(thR, decR, msgR, transitions);
     const currentActors = new Set((states.find(s=>s.state_id===currentState)?.actors||[]));
 
     const colW = 150, gateW = 120, timeW = 50, rowH = 40;
@@ -443,9 +525,18 @@ function initSlider(eventCount) {
   track.addEventListener('pointermove', e => { if (dragging) { updateSlider(clientYtoIdx(e.clientY), true); e.preventDefault(); } });
   track.addEventListener('pointerup', endDrag);
   track.addEventListener('pointercancel', endDrag);
-  window.addEventListener('resize', () => { trackAnchorTop = null; trackAnchorHeight = null; renderThumb(currentIdx >= 0 ? currentIdx : 0); });
-  document.getElementById('seq-scroll')?.addEventListener('scroll', () => renderThumb(currentIdx >= 0 ? currentIdx : 0));
-  scroller?.addEventListener('scroll', () => { if (!dragging) renderThumb(currentIdx >= 0 ? currentIdx : 0); });
+  const onResize = () => { trackAnchorTop = null; trackAnchorHeight = null; renderThumb(currentIdx >= 0 ? currentIdx : 0); };
+  const seqScroll = document.getElementById('seq-scroll');
+  const onSeqScroll = () => renderThumb(currentIdx >= 0 ? currentIdx : 0);
+  const onMainScroll = () => { if (!dragging) renderThumb(currentIdx >= 0 ? currentIdx : 0); };
+  window.addEventListener('resize', onResize);
+  seqScroll?.addEventListener('scroll', onSeqScroll);
+  scroller?.addEventListener('scroll', onMainScroll);
+  window._seqCleanup = function() {
+    window.removeEventListener('resize', onResize);
+    seqScroll?.removeEventListener('scroll', onSeqScroll);
+    scroller?.removeEventListener('scroll', onMainScroll);
+  };
 
   if (eventCount > 0) updateSlider(0);
 }

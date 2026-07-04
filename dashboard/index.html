@@ -417,6 +417,7 @@
 
 <script>
 let currentRunId = '';
+let currentRunStatus = '';
 
 document.getElementById('tabs').addEventListener('click', e => {
   const btn = e.target.closest('button');
@@ -428,14 +429,41 @@ document.getElementById('tabs').addEventListener('click', e => {
   if (currentRunId) renderTab(btn.dataset.tab);
 });
 
+function activeTab() {
+  return document.querySelector('.tabs button.active')?.dataset.tab || 'graph';
+}
+
+function setActiveTab(tab) {
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+}
+
+let liveRenderTimer = null;
+let liveRenderInFlight = false;
+function requestCurrentRunRefresh(options = {}) {
+  if (!currentRunId) return;
+  if (!options.force && (currentRunStatus === 'completed' || currentRunStatus === 'aborted')) return;
+  const tab = activeTab();
+  if (tab === 'diff') return;
+  clearTimeout(liveRenderTimer);
+  liveRenderTimer = setTimeout(async () => {
+    if (liveRenderInFlight) return;
+    liveRenderInFlight = true;
+    try { await renderTab(activeTab()); }
+    finally { liveRenderInFlight = false; }
+  }, 800);
+}
+
 async function loadRun() {
   const runId = document.getElementById('run-input').value.trim();
   if (!runId) return;
   currentRunId = runId;
+  currentRunStatus = 'loading';
+  if (location.hash.slice(1) !== runId) history.replaceState(null, '', '#' + encodeURIComponent(runId));
   document.getElementById('empty-msg').style.display = 'none';
   document.getElementById('tabs').style.display = 'flex';
+  setActiveTab('graph');
   document.getElementById('run-badge').innerHTML =
-    '<span class="badge badge-active">loading</span> <span style="font-size:12px;color:var(--text-tertiary);margin-left:4px">' + runId.slice(0,12) + '</span>';
+    '<span class="badge badge-active">loading</span> <span style="font-size:12px;color:var(--text-tertiary);margin-left:4px">' + escapeHtml(runId.slice(0,12)) + '</span>';
   renderTab('graph');
   if (typeof sidebarRender === 'function') sidebarRender();
 }
@@ -443,6 +471,7 @@ async function loadRun() {
 async function renderTab(tab) {
   const panel = document.getElementById('panel-' + tab);
   if (!panel) return;
+  if (tab !== 'graph' && typeof cleanupSequenceUi === 'function') cleanupSequenceUi();
   // Ensure the active tab's panel is visible
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   panel.classList.add('active');
@@ -450,10 +479,11 @@ async function renderTab(tab) {
     const res = await fetch('/api/runs/' + currentRunId + '/graph');
     const data = await res.json();
     if (data.error) { panel.innerHTML = '<div class="empty-state">' + data.error + '</div>'; return; }
+    currentRunStatus = data.status || '';
     const badge = data.status === 'completed' ? 'badge-completed' : data.status === 'active' ? 'badge-active' : 'badge-error';
     document.getElementById('run-badge').innerHTML =
-      '<span class="badge ' + badge + '">' + (data.status || '?') + '</span>' +
-      ' <span style="font-size:12px;color:var(--text-tertiary);margin-left:4px">' + currentRunId.slice(0,12) + '</span>';
+      '<span class="badge ' + badge + '">' + escapeHtml(data.status || '?') + '</span>' +
+      ' <span style="font-size:12px;color:var(--text-tertiary);margin-left:4px">' + escapeHtml(currentRunId.slice(0,12)) + '</span>';
     if (tab === 'graph') renderGraph(data);
     else if (tab === 'analysis') renderAnalysis(panel, data);
     else if (tab === 'diff') renderDiff(panel);
@@ -461,6 +491,17 @@ async function renderTab(tab) {
     panel.innerHTML = '<div class="empty-state">Error: ' + e.message + '</div>';
   }
 }
+
+function loadRunFromHash() {
+  if (!location.hash) return;
+  const runId = decodeURIComponent(location.hash.slice(1));
+  if (!runId || runId === currentRunId) return;
+  document.getElementById('run-input').value = runId;
+  loadRun();
+}
+
+window.addEventListener('hashchange', loadRunFromHash);
+loadRunFromHash();
 </script>
 </body>
 </html>

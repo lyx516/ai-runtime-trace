@@ -34,7 +34,7 @@ def load_tool(tool_id: str):
 
 
 def check_permission(agent_id: str, tool_id: str) -> tuple[bool, str]:
-    """检查 agent 是否有权使用该工具"""
+    """检查 agent 是否有权使用该工具（支持 trait 组合）"""
     if tool_id in UNIVERSAL_TOOLS:
         return True, ""
 
@@ -46,8 +46,14 @@ def check_permission(agent_id: str, tool_id: str) -> tuple[bool, str]:
     with open(meta) as f:
         info = yaml.safe_load(f)
 
-    allowed = info.get("tools_allowed", [])
-    max_tools = info.get("max_tools", 5)
+    # Resolve effective tools via trait system (or legacy tools_allowed)
+    try:
+        from trait_loader import resolve_agent_tools
+        allowed = resolve_agent_tools(info)
+    except Exception:
+        allowed = info.get("tools_allowed", [])
+
+    max_tools = info.get("max_tools", 90)
 
     if tool_id not in allowed:
         return False, f"{agent_id} 无权使用工具 '{tool_id}'，允许的: {allowed}"
@@ -101,7 +107,7 @@ def execute(agent_id: str, tool_id: str, args: dict) -> dict:
 
 
 def list_available(agent_id: str) -> dict:
-    """列出 agent 可用的所有工具（通用 + 专用）"""
+    """列出 agent 可用的所有工具（通用 + 专用，支持 trait 组合）"""
     import yaml
     meta = AGENTS_DIR / agent_id / "meta.yaml"
     if not meta.exists():
@@ -110,8 +116,14 @@ def list_available(agent_id: str) -> dict:
     with open(meta) as f:
         info = yaml.safe_load(f)
 
+    try:
+        from trait_loader import resolve_agent_tools
+        allowed = resolve_agent_tools(info)
+    except Exception:
+        allowed = info.get("tools_allowed", [])
+
     return {
         "universal": sorted(UNIVERSAL_TOOLS),
-        "allowed": info.get("tools_allowed", []),
-        "max_non_universal": info.get("max_tools", 5),
+        "allowed": allowed,
+        "max_non_universal": info.get("max_tools", 90),
     }

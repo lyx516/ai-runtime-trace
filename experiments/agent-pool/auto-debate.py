@@ -18,14 +18,20 @@ import os
 import re
 import sys
 import time
-import urllib.request
+import urllib.request, urllib.error
 import uuid
 from pathlib import Path
+from typing import Any, Optional
 
-PROJECT_ROOT = "/Users/liyuxuan/ai-runtime-trace"
-AGENTS_DIR = Path(PROJECT_ROOT) / "experiments" / "agent-pool" / "agents"
-SHARED_SKILLS_DIR = Path(PROJECT_ROOT) / "experiments" / "agent-pool" / "shared" / "skills"
-OUTPUT_DIR = Path(PROJECT_ROOT) / "experiments" / "agent-pool" / "generated"
+# Script location (agents, tools, skills live here)
+_SCRIPT_DIR = Path(__file__).resolve().parent
+# Runtime cwd (where files are searched/created)
+PROJECT_ROOT = os.getcwd()
+# Project root (where hermes_flow package lives)
+_PROJECT_ROOT_DIR = _SCRIPT_DIR.parent.parent
+AGENTS_DIR = _SCRIPT_DIR / "agents"
+SHARED_SKILLS_DIR = _SCRIPT_DIR / "shared" / "skills"
+OUTPUT_DIR = _SCRIPT_DIR / "generated"
 
 
 def load_agents() -> dict:
@@ -62,7 +68,7 @@ def load_agents() -> dict:
     return agents
 
 
-def call_llm(system: str, prompt: str, model: str = "deepseek-chat",
+def call_llm(system: str, prompt: str, model: str = "deepseek-v4-flash",
              temperature: float = 0.7, max_tokens: int = 1000) -> dict:
     """Call DeepSeek API, return parsed JSON response."""
     api_key = os.environ.get("DEEPSEEK_API_KEY") or ""
@@ -137,21 +143,46 @@ def manager_select_agents(goal: str, agents: dict) -> list[str]:
         if team_lines:
             team_skills_text = "\n可用班底技能:\n" + "\n".join(team_lines)
 
-    agent_list = "\n".join([
-        f"  - {aid}: {info.get('display_name', aid)} | 角色: {info.get('role', '')} | "
-        f"{info.get('description', '')}"
-        for aid, info in agents.items() if aid != "manager"
-    ])
+    from trait_loader import resolve_agent_tools
+    agent_list_lines = []
+    for aid, info in agents.items():
+        if aid == "manager":
+            continue
+        # Resolve effective tools via trait system
+        try:
+            tools = resolve_agent_tools(info)
+            tools_str = ", ".join(tools) if tools else "(无)"
+        except Exception:
+            tools_str = ", ".join(info.get("tools_allowed", []))
+        traits = info.get("traits", [])
+        traits_str = ", ".join(traits) if traits else "(无)"
+        excluded = info.get("tools_excluded", [])
+        excl_str = f"  排除: {', '.join(excluded)}" if excluded else ""
+        desc = info.get("description", "")[:80]
+        agent_list_lines.append(
+            f"  {aid}:\n"
+            f"    名称: {info.get('display_name', aid)}\n"
+            f"    角色: {info.get('role', '')}\n"
+            f"    能力组合: [{traits_str}]\n"
+            f"    可用工具: [{tools_str}]\n"
+            f"    {excl_str}\n"
+            f"    描述: {desc}"
+        )
+    agent_list = "\n".join(agent_list_lines)
 
-    system = f"""你是流程管理专家。根据用户目标从 Agent 池中选择 3-6 个。{team_skills_text}
+    system = f"""你是流程管理专家。根据用户目标从 Agent 池中选择 1-6 个。{team_skills_text}
 
 选择原则：
+- 闲聊、简单问答（讲笑话、问好、天气） → direct-chat (任意1个 agent, 如 writer 或 designer)
 - 纯方案推演/辩论 → debate-team (designer + critic + mediator + decider)
 - 完整开发流水线 → spec-team (spec-writer + plan-maker + task-breaker + implementer + code-reviewer)
 - 调研分析 → research-team (researcher + analyst + writer)
 - 全栈（辩论→实现→文档） → fullstack-team
 - 简单修复 → quick-fix-team (implementer + tester)
 - 也可以混编多个班底
+
+对于简单的聊天式任务，只选 1 个 agent 即可，team 用 "direct-chat"。
+对于复杂开发任务，选 3-6 个 agent。
 
 响应格式（严格 JSON）：
 {{"agents": ["id1","id2",...], "reason": "选择理由", "team": "使用的班底名称"}}
@@ -162,14 +193,16 @@ def manager_select_agents(goal: str, agents: dict) -> list[str]:
     result = call_llm(system, user, temperature=0.3)
     selected = result.get("agents", [])
     reason = result.get("reason", "")
+    team = result.get("team", "")
 
     valid = [a for a in selected if a in agents and a != "manager"]
-    if len(valid) < 2:
+    if len(valid) < 1:
         valid = ["designer", "critic", "mediator", "decider"]
         reason = "选择不足，使用默认辩论组合"
 
     print(f"  选择了: {', '.join(valid)}")
-    print(f"  理由: {reason}")
+    print(f"  理由: {reason}" if reason else "")
+    print(f"  班底: {team}" if team else "")
     return valid
 
 
@@ -218,7 +251,7 @@ def make_state(sid, desc, actors, gate=None, output_artifacts=None):
 
 
 def generate_yaml(goal: str, agent_ids: list[str], run_name: str, agents: dict,
-                  flow_topology: list[dict] | None = None) -> Path:
+                  flow_topology: Optional[list] = None) -> Path:
     """Generate flow YAML from a topology config. No role-specific hardcoding."""
     selected = {aid: agents[aid] for aid in agent_ids}
     import yaml as yaml_lib
@@ -293,70 +326,373 @@ def generate_yaml(goal: str, agent_ids: list[str], run_name: str, agents: dict,
 #  NOT manager responsibility — pure Hermes Flow state machine driver.
 # ══════════════════════════════════════════════════════════════════════
 
-def agent_prompt(role_id: str, soul: str, goal: str, state_id: str, round_n: int,
-                 history: list, inbox: list, gate: dict, tools_list: str = "") -> tuple[str, str]:
-    """Build system + user prompts for an agent, following Hermes prompt architecture."""
-    pass_vals = gate.get("pass_values", ["APPROVE"])
-    fail_vals = gate.get("fail_values", [])
-    on_pass = gate.get("on_pass", "DONE")
-    on_fail = gate.get("on_fail", "")
+def _build_multi_turn_system_prompt(
+    role_id: str, soul: str, goal: str,
+    output_artifacts: list[str],
+    tool_schemas: list[dict],
+) -> str:
+    """Build a task-oriented system prompt.
 
-    hist_text = "\n".join([f"  [{i+1}] {d['from_role']}: {str(d['content'])[:200]}"
-                          for i, d in enumerate(history)]) if history else "  (无)"
-    inbox_text = "\n".join([f"  从 {d['from_role']}: {d['content']}"
-                          for d in inbox]) if inbox else "  (空)"
+    Does NOT expose framework internals (state, gate, round).
+    Gives a clear task goal + skill-guided workflow + tools + exit condition.
+    """
+    # Tool descriptions for the prompt text
+    tool_descriptions = []
+    for ts in tool_schemas:
+        fn = ts.get("function", {})
+        tool_descriptions.append(f"  {fn['name']}: {fn.get('description', '')[:100]}")
+    tool_text = "\n".join(tool_descriptions) if tool_descriptions else "  (无)"
 
-    # ── System prompt (Hermes architecture) ──────────────────────────────────
-    system = f"""## 你的身份
-你是 {role_id}，{soul[:400]}
+    # Read assigned skill content, if any
+    skill_content = ""
+    _skill_path = Path(__file__).resolve().parent / "shared" / "skills" / role_id / "SKILL.md"
+    if _skill_path.exists():
+        with open(_skill_path, encoding="utf-8") as _f:
+            _raw = _f.read()
+        # Strip YAML frontmatter
+        if _raw.startswith("---"):
+            _parts = _raw.split("---", 2)
+            if len(_parts) >= 3:
+                skill_content = _parts[2].strip()
+            else:
+                skill_content = _raw
+        else:
+            skill_content = _raw
 
-## 工具使用规范（必须遵守）
-你必须使用工具来执行实际操作 —— 不能只描述你将要做什么而不真正去做。
-当你说要执行某个操作时（例如"我将写文件"、"让我查一下"、"我来实现"），
-你必须立即在同一轮调用对应的工具。不允许在承诺未来行动后结束本轮。
+    # Read trait-specific prompt
+    from trait_loader import resolve_agent_trait_prompts
+    import yaml as _yaml
+    _meta_path = Path(__file__).resolve().parent / "agents" / role_id / "meta.yaml"
+    _trait_prompt = ""
+    if _meta_path.exists():
+        with open(_meta_path) as _f:
+            _meta = _yaml.safe_load(_f)
+            _trait_prompt = resolve_agent_trait_prompts(_meta)
 
-持续工作直到任务真正完成。不要写完一个框架或一段计划就提交 APPROVE。
-如果你手头有可以完成任务的工具，直接使用它们，而不是描述你打算怎么做。
+    parts = [
+        f"## 你的身份",
+        f"{soul[:600]}",
+        "",
+        f"## 你的任务",
+        f"目标: {goal}",
+    ]
+    if output_artifacts:
+        parts.append(f"你需要产出: {', '.join(output_artifacts)}")
+    parts.append("")
 
-每一轮响应要么（a）包含推进工作的工具调用，要么（b）提交决策。
-只描述意图而不行动是不可接受的。
+    if skill_content:
+        # Use the skill as the primary workflow guide
+        # Strip the title line if present
+        skill_lines = [l for l in skill_content.split("\n") if not l.startswith("# ")]
+        skill_body = "\n".join(skill_lines).strip()
+        parts.extend([
+            "## 工作方式",
+            skill_body,
+            "",
+        ])
+    else:
+        parts.extend([
+            "## 工作方式",
+            "1. 分析目标，明确要产出的内容",
+            "2. 用 file_write 写入产物",
+            "3. 完成后调用 submit_decision(APPROVE)",
+            "",
+        ])
 
-## 可用工具
-{tools_list}
+    if _trait_prompt:
+        parts.append(f"## 附加规则\n{_trait_prompt}\n")
 
-## 响应格式（严格 JSON）
-{{"value": "APPROVE|REQUEST_CHANGES|BLOCKED", "reason": "理由",
-  "send_to": ["recipient"], "message": "消息内容",
-  "tool": "工具ID", "tool_args": {{"参数名": "参数值"}}}}
+    parts.extend([
+        "## 可用工具",
+        tool_text,
+        "",
+        "## 完成条件",
+        "产出文件后，调用 **submit_decision** 提交。",
+    ])
+    return "\n".join(parts)
 
-- value: 你的决策
-- tool/tool_args: 可选，先调工具干活，再提交决策
-- send_to/message: 可选，给其他 agent 发消息"""
 
-    user = f"""## 辩论上下文
-**状态**: {state_id}（第{round_n}轮） **目标**: {goal}
+def _run_agent_session(
+    role_id: str, soul: str, goal: str, state_id: str, round_n: int,
+    history: list, inbox: list, gate: dict, tool_schemas: list[dict],
+    agents: dict, output_artifacts: list[str] = None,
+    prev_artifacts: dict = None,
+) -> dict:
+    """Multi-turn agent session: think → tool → feedback → think → ... → decision.
 
-## 讨论历史
-{hist_text}
+    Uses OpenAI function calling natively. The LLM can:
+    - Call any tool from tool_schemas (file_read, patch, etc.)
+    - Call submit_decision when done (a pseudo-tool defined in tool_registry)
+    - All tool results are fed back as subsequent messages
+    - Loop continues until submit_decision or max turns
 
-## 收件箱
-{inbox_text}
+    Returns: {"value": "APPROVE|REQUEST_CHANGES|BLOCKED", "reason": "...", "tool_calls": N}
+    """
+    from tool_registry import execute_tool, format_tool_results_for_llm, DECISION_TOOL_SCHEMA
 
-## Gate
-通过: {pass_vals}  拒绝: {fail_vals}
-通过→ {on_pass}  拒绝→ {on_fail}
+    # Build system prompt
+    system = _build_multi_turn_system_prompt(
+        role_id, soul, goal, output_artifacts, tool_schemas,
+    )
 
-## 任务
-1. 阅读历史和收件箱
-2. 如有话说，设 send_to+message
-3. 提交决策"""
-    return system, user
+    # Build initial messages
+    messages = []
+    if history:
+        hist_lines = []
+        for d in history[-10:]:
+            c = str(d.get("content", ""))[:200]
+            hist_lines.append(f"{d['from_role']}: {c}")
+        messages.append({
+            "role": "user",
+            "content": f"## 讨论历史\n" + "\n".join(hist_lines),
+        })
+    if inbox:
+        inbox_lines = [f" 从 {m['from_role']}: {m['content']}" for m in inbox]
+        messages.append({
+            "role": "user",
+            "content": f"## 收件箱 ({len(inbox)} 条消息)\n" + "\n".join(inbox_lines),
+        })
+
+    # Inject previous state's artifact paths so this agent knows where to find them
+    artifact_hint = ""
+    if prev_artifacts:
+        lines = []
+        for name, path in prev_artifacts.items():
+            lines.append(f"  {name} → {path}")
+        artifact_hint = f"\n## 上一步的产出\n{chr(10).join(lines)}\n请先读取这些文件再开始工作。\n"
+
+    if not messages:
+        messages.append({
+            "role": "user",
+            "content": f"{artifact_hint}请完成 {state_id} 状态的工作。先使用工具完成实际任务，然后提交 submit_decision。".strip(),
+        })
+    else:
+        # Append to the last message
+        if artifact_hint:
+            messages[-1]["content"] += f"\n{artifact_hint.strip()}"
+
+    # OpenAI tools format: real tools + submit_decision pseudo-tool
+    tools = list(tool_schemas)
+    tools.append(DECISION_TOOL_SCHEMA)
+
+    max_turns = 20
+    tool_calls_made = 0
+    _empty_fails = 0
+    _last_empty_tool = ""
+
+    # Inject turn info into the very first message so agent knows the limit
+    turn_info = f"\n(本轮可用 {max_turns} 次工具调用，已用 0 次)"
+    if messages:
+        messages[-1]["content"] += turn_info
+    else:
+        messages.append({
+            "role": "user",
+            "content": turn_info.strip(),
+        })
+
+    for turn in range(max_turns):
+        # Print thinking indicator
+        print(f"     🤔 round {turn+1}/{max_turns}...", end="", flush=True)
+
+        t0 = time.time()
+        try:
+            resp_data = _call_llm_tools(system, messages, tools)
+            dt = time.time() - t0
+        except Exception as e:
+            print(f" ❌ {e}")
+            return {"value": "APPROVE", "reason": f"[fallback] LLM error: {e}", "tool_calls": tool_calls_made}
+
+        # Check for tool calls
+        tool_calls = resp_data.get("tool_calls", [])
+        text_content = resp_data.get("content", "")
+
+        # ── IMPORTANT: save assistant's response (with tool_calls) to message history ──
+        # OpenAI/DeepSeek format requires: assistant(tool_calls) → tool(result) → ...
+        assistant_msg = {"role": "assistant", "content": text_content or None}
+        if tool_calls:
+            # Store tool_calls in OpenAI format: [{"id": "...", "type": "function", "function": {"name": "...", "arguments": "..."}}]
+            assistant_msg["tool_calls"] = [
+                {
+                    "id": tc.get("id", f"call_{turn}_{i}"),
+                    "type": "function",
+                    "function": {
+                        "name": tc["function"]["name"],
+                        "arguments": tc["function"]["arguments"],
+                    },
+                }
+                for i, tc in enumerate(tool_calls)
+            ]
+        messages.append(assistant_msg)
+
+        if tool_calls:
+            print(f" {dt:.1f}s → {len(tool_calls)} tool(s)")
+            tool_msgs = []
+            submit_dec = None
+            for tc in assistant_msg["tool_calls"]:
+                fn_name = tc.get("function", {}).get("name", "")
+                raw_args = tc.get("function", {}).get("arguments", "{}")
+                try:
+                    fn_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                except json.JSONDecodeError:
+                    fn_args = {}
+
+                # Check if decision
+                if fn_name == "submit_decision":
+                    value = fn_args.get("value", "APPROVE").upper()
+                    reason = fn_args.get("reason", f"[{role_id}] Decision via submit_decision")
+                    print(f"     ✅ submit_decision({value}) — {reason[:60]}")
+                    submit_dec = {"value": value, "reason": reason, "tool_calls": tool_calls_made}
+                    continue
+
+                # Execute real tool
+                if fn_name == "agent_message_send":
+                    send_to = fn_args.get("recipients", fn_args.get("intended_recipients", []))
+                    content = fn_args.get("content", "")
+                    if send_to and content:
+                        print(f"     💬 → {send_to[0]}: {content[:60]}...")
+                        tools_runner_dir = Path(__file__).resolve().parent
+                        run_id = goal
+                else:
+                    print(f"     🔧 {fn_name}({json.dumps(fn_args, ensure_ascii=False)[:80]})", end="")
+
+                result = execute_tool(fn_name, fn_args, role_id)
+                tool_calls_made += 1
+                ok = result.get("ok", False)
+                print(f" {'✅' if ok else '❌'}")
+
+                formatted = format_tool_results_for_llm(fn_name, result)
+                tool_msgs.append({
+                    "role": "tool",
+                    "tool_call_id": tc.get("id", fn_name),
+                    "content": formatted,
+                })
+
+                # Empty-arg loop detection
+                if not ok and not any(fn_args.values()):
+                    _empty_fails = _empty_fails + 1
+                    _last_empty_tool = fn_name
+                    if _empty_fails >= 2 and _last_empty_tool == fn_name:
+                        tool_msgs.append({
+                            "role": "user",
+                            "content": (
+                                f"⚠️  You have called '{fn_name}' with empty arguments "
+                                f"{_empty_fails} times and it failed each time. "
+                                f"Stop retrying this call. Proceed with submit_decision "
+                                f"or try a different approach."
+                            ),
+                        })
+                        _empty_fails = 0
+                else:
+                    _empty_fails = 0
+
+            if submit_dec:
+                return submit_dec
+
+            # Append ALL tool messages contiguously (DeepSeek requires this)
+            # THEN append one turn info message
+            for m in tool_msgs:
+                messages.append(m)
+            messages.append({
+                "role": "user",
+                "content": f"(剩余 {max_turns - tool_calls_made}/{max_turns} 次工具调用)",
+            })
+        elif text_content:
+            print(f" {dt:.1f}s → text response ({len(text_content)} chars)")
+            # Check if text contains a decision marker
+            import re
+            dec_match = re.search(
+                r'"(?:value|decision)"\s*:\s*"(APPROVE|REQUEST_CHANGES|BLOCKED)"',
+                text_content,
+            )
+            if dec_match:
+                val = dec_match.group(1)
+                reason = text_content[:200].replace("\n", " ")
+                print(f"     ✅ embedded decision: {val}")
+                return {"value": val, "reason": reason, "tool_calls": tool_calls_made}
+            # Otherwise treat as thinking and continue
+            messages.append({"role": "assistant", "content": text_content[:1000]})
+        else:
+            # Empty response — might be thinking-only; continue
+            print(f" {dt:.1f}s → empty response")
+            continue
+
+    # Max turns reached — auto-approve as fallback
+    print(f"     ⏰ max turns ({max_turns}) reached, auto-approving")
+    return {
+        "value": "APPROVE",
+        "reason": f"[{role_id}@{state_id}] max turns reached ({max_turns})",
+        "tool_calls": tool_calls_made,
+    }
+
+
+def _call_llm_tools(
+    system: str, messages: list[dict], tools: list[dict],
+    model: str = "deepseek-v4-flash",
+) -> dict:
+    """Call LLM with OpenAI function-calling tools format.
+
+    Returns: {"content": str, "tool_calls": [{"id": str, "function": {"name": ..., "arguments": ...}}]}
+    """
+    api_key = os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
+    if not api_key:
+        return {"content": "{}", "tool_calls": []}
+
+    # Count token budget roughly
+    system_len = len(system)
+    msgs_len = sum(len(str(m)) for m in messages)
+    tools_str = json.dumps(tools, ensure_ascii=False)
+    total_chars = system_len + msgs_len + len(tools_str)
+
+    body = {
+        "model": model,
+        "messages": [{"role": "system", "content": system}] + messages,
+        "temperature": 0.7,
+        "max_tokens": max(300, min(4000, 32000 - total_chars // 4)),
+    }
+
+    # Only send tools if we have any
+    if tools:
+        body["tools"] = tools
+        body["tool_choice"] = "auto"
+
+    body_bytes = json.dumps(body, ensure_ascii=False).encode()
+
+    req = urllib.request.Request(
+        "https://api.deepseek.com/chat/completions",
+        data=body_bytes,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+    )
+    try:
+        resp = urllib.request.urlopen(req, timeout=120)
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode("utf-8", "replace")[:500]
+        raise RuntimeError(f"DeepSeek API {e.code}: {err_body}") from e
+    result = json.loads(resp.read())
+
+    choice = result["choices"][0]["message"]
+    text_content = choice.get("content", "") or ""
+    raw_tool_calls = choice.get("tool_calls", [])
+
+    tool_calls = []
+    for tc in raw_tool_calls:
+        tool_calls.append({
+            "id": tc.get("id", ""),
+            "function": {
+                "name": tc["function"]["name"],
+                "arguments": tc["function"]["arguments"],
+            },
+        })
+
+    return {"content": text_content, "tool_calls": tool_calls}
 
 
 def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, agents: dict):
     """Flow engine: drive Hermes Flow state machine until completion. Not manager's job."""
-    sys.path.insert(0, PROJECT_ROOT)
     os.environ["HERMES_FLOW_PROJECT_ROOT"] = PROJECT_ROOT
+    os.environ["HERMES_WORKSPACE_ROOT"] = PROJECT_ROOT
 
     from hermes_flow.tools import flow_init, flow_step, flow_send, flow_decide
     from hermes_flow.storage import RuntimeStore
@@ -368,7 +704,6 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
     if not result.get("ok"):
         print(f"❌ flow_init 失败: {result.get('error')}")
         print(f"   {result.get('details', [])}")
-        # Clean up empty database left by failed init
         failed_run_id = result.get("run_id", "")
         if failed_run_id:
             failed_dir = Path(PROJECT_ROOT) / ".hermes-flow" / "runs" / failed_run_id
@@ -384,6 +719,10 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
     set_tracer(SqliteTracer(store, run_id=run_id))
     conn = store.connect()
 
+    # Track artifacts found across states for passing to next agent
+    found_artifacts: dict[str, str] = {}
+
+    # ── Flow engine loop ────────────────────────────────────────────
     print(f"\n{'='*60}")
     print(f"🏁 Run: {run_id}")
     print(f"🎯 {goal}")
@@ -433,7 +772,7 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
             continue
 
         for role_id in required_roles:
-            # ── Standard LLM agent ─────────────────────────────────
+            # ── Multi-turn agent session ────────────────────────────
             info = agents.get(role_id, {})
             soul = info.get("soul", "")
 
@@ -444,68 +783,50 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
             all_msgs = conn.execute(
                 "SELECT from_role, content FROM messages ORDER BY rowid").fetchall()
 
-            from tools_runner import list_available
-            tool_info = list_available(role_id)
-            uni = "\\n".join([f"    {t} — 通用工具（不计入限制）" for t in tool_info.get("universal", [])])
-            allowed = "\\n".join([f"    {t}" for t in tool_info.get("allowed", [])])
-            tools_list = f"## 可用工具\\n\\n### 通用工具（始终可用）:\\n{uni}\\n\\n### 专用工具（max {tool_info.get('max_non_universal', 5)}）:\\n{allowed}" if tool_info.get("allowed") else f"## 可用工具\\n{uni}"
+            # Get tool schemas auto-generated from meta.yaml + tools/<id>/
+            from tool_registry import get_agent_tools_schemas
+            tool_schemas = get_agent_tools_schemas(role_id)
+            print(f"  🤖 {role_id} ({len(tool_schemas)} tools)")
 
-            # Append usage examples for key tools
-            usage_hints = "\\n\\n**工具参数说明**:\\n"
-            usage_hints += "  file_write: tool_args = {\"path\": \"文件名\", \"content\": \"文件内容\"}\\n"
-            usage_hints += "  file_read:  tool_args = {\"path\": \"文件名\"}\\n"
-            usage_hints += "  web_search: tool_args = {\"query\": \"搜索关键词\"}\\n"
-            usage_hints += "  memory_write: tool_args = {\"content\": \"记忆内容\", \"mode\": \"append|overwrite\"}\\n"
-            tools_list += usage_hints
+            # Run multi-turn session: think → tool → feedback → think → ... → decision
+            result = _run_agent_session(
+                role_id, soul, goal, state_id, cur_round,
+                all_msgs, inbox_rows, gate, tool_schemas, agents,
+                output_artifacts=state_dict.get("output_artifacts", []),
+                prev_artifacts=found_artifacts if found_artifacts else None,
+            )
 
-            sys_p, usr_p = agent_prompt(role_id, soul, goal, state_id, cur_round,
-                                         all_msgs, inbox_rows, gate, tools_list)
+            val = result.get("value", "APPROVE").upper()
+            reason = result.get("reason", "")
+            tool_count = result.get("tool_calls", 0)
+            print(f"     ✅ {val} (after {tool_count} tool call(s))")
 
-            print(f"  🤖 {role_id}...", end="", flush=True)
-            t0 = time.time()
-            try:
-                resp = call_llm(sys_p, usr_p, temperature=0.8, max_tokens=2000)
-                dt = time.time() - t0
-                val = resp.get("value", "APPROVE").upper()
-                print(f" {dt:.1f}s → {val}")
-
-                msg = resp.get("message", "")
-                send_to = resp.get("send_to", [])
-                if msg and send_to:
-                    r2 = flow_send(run_id, state_id, role_id, send_to, "debate", msg)
-                    if r2.get("ok"):
-                        print(f"     💬 → {send_to[0]}: {msg[:60]}...")
-
-                # Execute tool if specified
-                tool_name = resp.get("tool", "")
-                tool_args = resp.get("tool_args", {})
-                if tool_name:
-                    from tools_runner import execute as exec_tool
-                    from agent_tools import dispatch as dispatch_universal
-                    if tool_name in ("memory_read", "memory_write", "skill_create", "skill_list", "agent_summarize"):
-                        tool_result = dispatch_universal(role_id, tool_name, tool_args)
+            # Product gate enforcement: verify output artifacts exist
+            # Search recursively — agent may write to a subdirectory
+            output_artifacts = state_dict.get("output_artifacts", [])
+            if output_artifacts:
+                for art_name in output_artifacts:
+                    # Check project root first
+                    art_path = Path(PROJECT_ROOT) / art_name
+                    if art_path.exists() and art_path.stat().st_size > 0:
+                        print(f"     📄 {art_name} ({art_path.stat().st_size} bytes) ✅")
+                        found_artifacts[art_name] = str(art_path)
+                        continue
+                    # Search recursively as fallback
+                    found = list(Path(PROJECT_ROOT).rglob(art_name))
+                    found = [f for f in found if f.is_file() and f.stat().st_size > 0]
+                    if found:
+                        fp = str(found[0])
+                        print(f"     📄 {art_name} → {found[0].relative_to(Path(PROJECT_ROOT))} ({found[0].stat().st_size} bytes) ✅")
+                        found_artifacts[art_name] = fp
                     else:
-                        tool_result = exec_tool(role_id, tool_name, tool_args)
-                    print(f"     🔧 {tool_name}: {'✅' if tool_result.get('ok') else '❌'} {str(tool_result)[:80]}")
+                        print(f"     ⚠️  产物 {art_name} 未找到！降级为 REQUEST_CHANGES")
+                        val = "REQUEST_CHANGES"
 
-                # Product gate enforcement: verify output artifacts exist
-                output_artifacts = state_dict.get("output_artifacts", [])
-                if output_artifacts:
-                    for art_name in output_artifacts:
-                        art_path = Path(PROJECT_ROOT) / art_name
-                        if art_path.exists() and art_path.stat().st_size > 0:
-                            print(f"     📄 {art_name} ({art_path.stat().st_size} bytes) ✅")
-                        else:
-                            print(f"     ⚠️  产物 {art_name} 缺失！降级为 REQUEST_CHANGES")
-                            val = "REQUEST_CHANGES"
+            flow_decide(run_id, state_id, role_id, val, reason)
 
-                flow_decide(run_id, state_id, role_id, val, resp.get("reason", ""))
-
-                if val in fail_vals:
-                    break
-            except Exception as e:
-                print(f" ❌ {e}")
-                flow_decide(run_id, state_id, role_id, "APPROVE", f"fallback: {e}")
+            if val in fail_vals:
+                break
 
         r3 = flow_step(run_id)
         if r3.get("ok"):
@@ -691,20 +1012,46 @@ def main():
     import yaml as yaml_lib
     team_skills_dir = Path(__file__).resolve().parent / "agents" / "manager" / "skills"
     flow_topology = []
-    # Pick first matching team skill based on selected agents
+
+    # Find the skill whose agent set best overlaps with selected agents
+    selected_set = set(agent_ids)
+    best_match = None
+    best_overlap = 0
     for skill_file in sorted(team_skills_dir.glob("*.md")):
         text = skill_file.read_text(encoding="utf-8")
-        if text.startswith("---"):
-            parts = text.split("---", 2)
-            if len(parts) >= 3:
-                fm = yaml_lib.safe_load(parts[1])
-                team_agents = set(fm.get("agents", []))
-                if team_agents and team_agents.issubset(set(agent_ids)):
-                    flow_topology = fm.get("flow", [])
-                    print(f"  采用班底: {fm.get('name', skill_file.stem)} ({len(flow_topology)} 个状态)")
-                    break
+        if not text.startswith("---"):
+            continue
+        parts = text.split("---", 2)
+        if len(parts) < 3:
+            continue
+        fm = yaml_lib.safe_load(parts[1])
+        team_agents = set(fm.get("agents", []))
+        if not team_agents:
+            continue
+        overlap = len(team_agents & selected_set)
+        # Pick the skill with highest agent overlap
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best_match = (skill_file, fm)
+
+    if best_match and best_overlap >= max(2, len(selected_set) * 0.6):
+        skill_file, fm = best_match
+        flow_topology = fm.get("flow", [])
+        print(f"  采用班底: {fm.get('name', skill_file.stem)} ({len(flow_topology)} 个状态, 匹配度 {best_overlap}/{len(selected_set)})")
+    else:
+        print(f"  ⚠️ 未找到匹配班底 (最佳: {best_overlap}/{len(selected_set)})")
     if not flow_topology:
-        print("  ⚠️ 未匹配到班底，使用默认空拓扑")
+        if len(agent_ids) == 1:
+            # Single agent: one DONE state, no gate
+            flow_topology = [{
+                "state": "DONE",
+                "description": goal[:80],
+                "actors": agent_ids[0],
+                "gate": {"type": "decision", "pass": "DONE", "fail": "ABORT", "max": 3},
+            }]
+            print(f"  💬 简单任务，单 agent 直接回答")
+        else:
+            print("  ⚠️ 未匹配到班底，使用默认空拓扑")
 
     # Phase 2: Manager generates flow YAML + briefs agents
     print("\n📄 生成 Flow YAML...")
@@ -713,9 +1060,13 @@ def main():
 
     # Manager briefs each agent via inbox
     print("\n📨 管理者发送任务简报...")
-    sys.path.insert(0, PROJECT_ROOT)
-    os.environ["HERMES_FLOW_PROJECT_ROOT"] = PROJECT_ROOT
-    from hermes_flow.tools import flow_send
+    sys.path.insert(0, str(_PROJECT_ROOT_DIR))
+    os.environ["HERMES_WORKSPACE_ROOT"] = PROJECT_ROOT
+    try:
+        from hermes_flow.tools import flow_send
+    except ModuleNotFoundError:
+        print(f"  ⚠️ hermes_flow 加载失败, 检查路径: {_PROJECT_ROOT_DIR}")
+        flow_send = None
     # We need a run_id to send messages. Use YAML's flow_id or init a placeholder.
     # Actually, inbox is only available after flow_init. Let's write briefing to
     # each agent's Memory.md instead via agent_tools.
@@ -741,7 +1092,11 @@ def main():
     # Phase 3: Flow engine runs (NOT manager)
     run_flow(goal, agent_ids, yaml_path, run_name, agents)
 
-    # Phase 4: Manager evaluates
+    # Phase 4: Manager records decision pattern for future reference
+    pattern = f"## 团队搭配经验\n目标: {goal[:80]} | 团队: {', '.join(agent_ids)} | 班底: 自动决策"
+    from agent_tools import memory_write
+    memory_write("manager", pattern, mode="append")
+    print(f"  ✅ manager: 决策模式已记录到 Memory.md")
 
 
 if __name__ == "__main__":

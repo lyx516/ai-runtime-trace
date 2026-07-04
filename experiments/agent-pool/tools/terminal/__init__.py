@@ -7,7 +7,12 @@ def run(args: dict) -> dict:
     timeout = args.get("timeout", 30)
     workdir = args.get("workdir", None)
     if not command:
-        return {"ok": False, "error": "command required"}
+        return {
+            "ok": False,
+            "error": "terminal: command is empty. "
+                     "Provide the 'command' argument with a valid shell command. "
+                     "Do not retry this call with an empty command.",
+        }
     try:
         result = subprocess.run(
             command, shell=True, capture_output=True, text=True,

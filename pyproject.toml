@@ -13,5 +13,8 @@ dependencies = [
 [tool.setuptools.packages.find]
 include = ["hermes_flow*"]
 
+[project.scripts]
+debate = "hermes_flow.debate_cli:main"
+
 [tool.pytest.ini_options]
 testpaths = ["tests/hermes_flow"]

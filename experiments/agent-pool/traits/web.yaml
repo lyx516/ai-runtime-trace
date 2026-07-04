@@ -1,0 +1,9 @@
+# web — 网络搜索能力
+trait_id: web
+name: 网络搜索
+description: 搜索外部信息
+tools_allowed:
+  - web_search
+prompt_segment: |
+  - 搜索要精确，加上限定词缩小范围
+  - 引用来源辅助决策

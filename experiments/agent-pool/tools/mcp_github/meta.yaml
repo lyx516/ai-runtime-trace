@@ -1,7 +1,0 @@
-tool_id: mcp_github
-name: GitHub 操作
-category: 协作
-description: 创建 Issue/PR、审查代码、管理仓库等 GitHub 操作
-
-risk: high
-universal: false

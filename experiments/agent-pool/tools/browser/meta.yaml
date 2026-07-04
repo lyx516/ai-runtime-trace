@@ -1,7 +1,0 @@
-tool_id: browser
-name: 浏览器交互
-category: 信息
-description: 启动浏览器访问网页、截图、点击交互，用于验收前端页面或获取网页内容
-
-risk: medium
-universal: false

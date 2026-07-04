@@ -1,35 +1,37 @@
-"""文件读取工具"""
+"""Read a text file with line numbers and pagination. scoped to workspace."""
 import os
 from pathlib import Path
-
-PROJECT_ROOT = os.environ.get("HERMES_FLOW_PROJECT_ROOT") or os.getcwd()
 
 def run(args: dict) -> dict:
     path = args.get("path", "")
     offset = args.get("offset", 1)
-    limit = args.get("limit", 200)
+    limit = args.get("limit", 500)
 
     if not path:
-        return {"ok": False, "error": "path required"}
+        return {"ok": False, "error": "read_file: missing required field 'path'"}
 
-    full = Path(PROJECT_ROOT) / path if not path.startswith("/") else Path(path)
+    from tools._scope import safe_path
+    full, err = safe_path(path)
+    if err:
+        return {"ok": False, "error": err}
+
     if not full.exists():
-        return {"ok": False, "error": f"file not found: {full}"}
+        return {"ok": False, "error": f"read_file: file not found: {path}"}
     if not full.is_file():
-        return {"ok": False, "error": f"not a file: {full}"}
+        return {"ok": False, "error": f"read_file: not a file: {path}"}
 
     try:
         lines = full.read_text(encoding="utf-8").splitlines()
         total = len(lines)
         start = max(0, offset - 1)
         end = min(total, start + limit)
-        content = "\n".join(lines[start:end])
+        numbered = [f"{i+1}|{lines[i]}" for i in range(start, end)]
         return {
             "ok": True,
-            "content": content,
+            "content": "\n".join(numbered),
             "total_lines": total,
             "offset": offset,
             "lines_returned": end - start,
         }
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": f"read_file: {e}"}

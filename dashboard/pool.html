@@ -25,11 +25,14 @@ h1{font-size:20px;font-weight:600;margin-bottom:20px;color:#f0f6fc}
 <div class="stat-bar" id="stats"></div>
 <div class="agent-grid" id="grid"></div>
 <script>
+function escapeHtml(v){
+  return String(v??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
 async function load(){
-  const r=await(await fetch('/api/pool')).catch(()=>null);
+  const r=await fetch('/api/pool').catch(()=>null);
   if(!r) return document.getElementById('grid').innerHTML='<p style="color:#f85149">无法连接 Observer</p>';
   const d=await r.json();
-  if(d.error) return document.getElementById('grid').innerHTML=`<p style="color:#f85149">${d.error}</p>`;
+  if(d.error) return document.getElementById('grid').innerHTML=`<p style="color:#f85149">${escapeHtml(d.error)}</p>`;
   const a=d.agents||[];
   const skills=new Set(a.flatMap(x=>x.assigned_skills||[])).size;
   const tools=new Set(a.flatMap(x=>x.tools_allowed||[])).size;
@@ -39,10 +42,10 @@ async function load(){
     `<div class=stat><div class=num>${tools}</div><div class=lbl>可用工具</div></div>`;
   document.getElementById('grid').innerHTML=a.map(x=>
     `<div class=card onclick=this.classList.toggle('open')>`+
-      `<div class=card-header><span class=name>${x.display_name||x.agent_id}</span><span class=role>${x.role||''}</span></div>`+
-      `<div class=desc>${(x.description||'').slice(0,80)}</div>`+
-      `<div>${(x.assigned_skills||[]).map(s=>`<span class="tag skill">📘 ${s}</span>`).join('')}`+
-      `${(x.tools_allowed||[]).map(t=>`<span class="tag tool">🔧 ${t}</span>`).join('')}</div>`+
+      `<div class=card-header><span class=name>${escapeHtml(x.display_name||x.agent_id)}</span><span class=role>${escapeHtml(x.role||'')}</span></div>`+
+      `<div class=desc>${escapeHtml((x.description||'').slice(0,80))}</div>`+
+      `<div>${(x.assigned_skills||[]).map(s=>`<span class="tag skill">📘 ${escapeHtml(s)}</span>`).join('')}`+
+      `${(x.tools_allowed||[]).map(t=>`<span class="tag tool">🔧 ${escapeHtml(t)}</span>`).join('')}</div>`+
     `</div>`
   ).join('');
 }

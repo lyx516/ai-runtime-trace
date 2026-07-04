@@ -1,0 +1,11 @@
+# file-io — 文件读写和搜索能力
+trait_id: file-io
+name: 文件操作
+description: 读写文件、搜索文件和目录
+tools_allowed:
+  - file_read
+  - search_files
+  - patch
+prompt_segment: |
+  - 产出文件放在项目根目录，创建独立子目录
+  - 写完整内容，不要留 stub

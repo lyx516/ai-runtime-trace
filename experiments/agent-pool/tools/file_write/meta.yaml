@@ -1,7 +1,0 @@
-tool_id: file_write
-name: 写入文件
-category: 文件
-description: 创建或覆盖文件，用于提交设计方案、代码、文档等产出物
-
-risk: medium
-universal: false

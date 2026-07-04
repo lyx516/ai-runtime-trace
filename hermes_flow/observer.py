@@ -168,21 +168,40 @@ class SSEHandler(http.server.BaseHTTPRequestHandler):
                 db = d / "state.sqlite"
                 if db.exists():
                     display_name = d.name
+                    created_at = ""
+                    updated_at = ""
+                    try:
+                        from datetime import datetime, timezone
+
+                        updated_at = datetime.fromtimestamp(
+                            db.stat().st_mtime,
+                            tz=timezone.utc,
+                        ).isoformat()
+                    except Exception:
+                        pass
                     try:
                         import sqlite3
                         c = sqlite3.connect(str(db))
-                        row = c.execute("SELECT display_name FROM runs WHERE run_id=?", (d.name,)).fetchone()
+                        row = c.execute(
+                            "SELECT display_name, created_at FROM runs WHERE run_id=?",
+                            (d.name,),
+                        ).fetchone()
                         if row and row[0]:
                             display_name = row[0]
+                        if row and len(row) > 1 and row[1]:
+                            created_at = row[1]
                         c.close()
                     except Exception:
                         pass
                     runs.append({
                         "run_id": d.name,
                         "display_name": display_name,
+                        "created_at": created_at,
+                        "updated_at": updated_at,
                         "path": str(d),
                         "db_size": db.stat().st_size if db.exists() else 0,
                     })
+        runs.sort(key=lambda r: r.get("created_at") or "", reverse=True)
         return runs
 
     def _get_run_status(self, run_id: str) -> dict | None:
@@ -495,7 +514,8 @@ class SSEHandler(http.server.BaseHTTPRequestHandler):
                     "from": td["from_state_id"],
                     "to": td["to_state_id"],
                     "gate_result": td.get("gate_result", ""),
-                    "round": td.get("round", 0),
+                    "round": td.get("round_counter", td.get("round", 0)),
+                    "created_at": td.get("created_at", ""),
                 })
                 if td["to_state_id"] in nodes:
                     nodes[td["to_state_id"]]["visit_count"] += 1
@@ -663,7 +683,10 @@ class FlowObserver:
         if self._thread and self._thread.is_alive():
             return
 
-        self._server = http.server.HTTPServer(("0.0.0.0", self.port), SSEHandler)
+        from http.server import ThreadingHTTPServer
+
+        self._server = ThreadingHTTPServer(("0.0.0.0", self.port), SSEHandler)
+        self._server.daemon_threads = True
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         logger.info("FlowObserver listening on http://localhost:%d", self.port)
@@ -680,9 +703,11 @@ class FlowObserver:
         _bus.publish(event_type, data)
 
 
-# ── Dashboard HTML ──────────────────────────────────────────────────────
+# ── Legacy embedded dashboard (unused) ─────────────────────────────────
+# Static files under dashboard/ are the supported dashboard source. Keep this
+# string only as a historical fallback/reference so new changes do not fork UI.
 
-DASHBOARD_HTML = """<!DOCTYPE html>
+LEGACY_DASHBOARD_HTML_UNUSED = """<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="UTF-8">

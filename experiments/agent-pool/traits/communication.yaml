@@ -1,0 +1,8 @@
+# communication — 消息沟通能力
+trait_id: communication
+name: 跨 agent 沟通
+description: 给其他 agent 发消息、读收件箱
+tools_allowed: []
+prompt_segment: |
+  - 需要其他 agent 配合时用 agent_message_send 发消息
+  - 多轮沟通时保持上下文清晰
