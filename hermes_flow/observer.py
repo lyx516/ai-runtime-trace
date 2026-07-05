@@ -156,8 +156,16 @@ class SSEHandler(http.server.BaseHTTPRequestHandler):
         return None
 
     def _iter_runs_dirs(self) -> list[Path]:
-        """Return the single canonical run directory visible to the observer."""
-        return [self.runs_dir] if self.runs_dir.exists() else []
+        """Return all run directories — primary + fallback (git root legacy runs)."""
+        dirs = []
+        if self.runs_dir.exists():
+            dirs.append(self.runs_dir)
+        # Fallback: git root .hermes-flow/runs (old runs before cli.py fix)
+        if self.project_root:
+            _legacy = Path(self.project_root) / ".hermes-flow" / "runs"
+            if _legacy.exists() and _legacy != self.runs_dir:
+                dirs.append(_legacy)
+        return dirs
 
     def _list_runs(self) -> list[dict]:
         runs = []
@@ -396,6 +404,8 @@ class SSEHandler(http.server.BaseHTTPRequestHandler):
                     role_id = qs.get("role_id", [None])[0]
                     state_id = qs.get("state_id", [None])[0]
                     data = self._get_thinking(run_id, role_id, state_id)
+                elif resource == "performance":
+                    data = self._get_performance(run_id)
 
                 if data is not None:
                     return self._send_json(data)
@@ -641,16 +651,18 @@ class SSEHandler(http.server.BaseHTTPRequestHandler):
         role_id: str | None = None,
         state_id: str | None = None,
     ) -> list[dict]:
-        """Query thinking events for a run."""
+        """Get thinking events for a run."""
         store = self._read_store(run_id)
         if not store:
             return []
-        try:
-            return store.load_thinking_events(
-                run_id, role_id=role_id, state_id=state_id,
-            )
-        except Exception as e:
-            return [{"error": str(e)}]
+        return store.load_thinking_events(run_id, role_id, state_id)
+
+    def _get_performance(self, run_id: str) -> dict | None:
+        """Get performance evaluation for a run."""
+        store = self._read_store(run_id)
+        if not store:
+            return None
+        return store.load_run_performance(run_id)
 
     def _decode_json_value(self, value: Any, default: Any) -> Any:
         """Decode JSON stored in SQLite TEXT columns."""
@@ -1202,6 +1214,45 @@ class FlowObserver:
     def publish_event(self, event_type: str, data: dict[str, Any]) -> None:
         """Publish an event to all SSE subscribers."""
         _bus.publish(event_type, data)
+
+
+# ── Convenience: auto-start observer ───────────────────────────────────────
+
+_observer_instance: FlowObserver | None = None
+
+
+def ensure_observer(port: int = 8765, project_root: str | None = None) -> FlowObserver:
+    """Ensure an observer is running on `port`. Starts one if not already.
+
+    Idempotent — safe to call multiple times. Returns the singleton instance.
+    Called by run_flow() so every debate run gets a live dashboard.
+    """
+    global _observer_instance
+
+    if _observer_instance is not None and _observer_instance._thread and _observer_instance._thread.is_alive():
+        return _observer_instance
+
+    # Check if port is already in use (maybe from a previous --standalone launch)
+    import socket as _socket
+    _in_use = False
+    try:
+        with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
+            _s.settimeout(0.5)
+            _in_use = _s.connect_ex(("127.0.0.1", port)) == 0
+    except Exception:
+        pass
+
+    if _in_use:
+        logger.info("Observer already running on port %d, not starting a new one", port)
+        return FlowObserver(port=port, project_root=project_root)  # stub — not started
+
+    _observer_instance = FlowObserver(port=port, project_root=project_root)
+    # Honour HERMES_FLOW_RUNS_DIR if set (so observer finds runs alongside auto-debate.py)
+    _runs_dir = os.environ.get("HERMES_FLOW_RUNS_DIR")
+    if _runs_dir:
+        SSEHandler.runs_dir = Path(_runs_dir)
+    _observer_instance.start()
+    return _observer_instance
 
 
 # ── Legacy embedded dashboard (unused) ─────────────────────────────────

@@ -314,6 +314,33 @@ class StepResult:
     status: Optional[FlowStatus] = None
 
 
+@dataclass
+class AgentSessionState:
+    """Agent session 完整运行时状态 — 可序列化为 checkpoint。
+
+    桥接 _init_agent_session_state() 和 _run_session_loop()。
+    loop 中每轮完成时通过 turn.end hook 序列化到 agent_session_checkpoints 表。
+    """
+
+    # ── 身份 ──
+    run_id: str = ""
+    role_id: str = ""
+    state_id: str = ""
+    round_n: int = 0
+
+    # ── 不可变上下文（init 构建，loop 期间不变）──
+    system_prompt: str = ""
+
+    # ── 可变运行时 ──
+    messages_json: str = ""          # JSON: 完整对话历史 (system + user/assistant/tool)
+    tools_json: str = ""             # JSON: tool_schemas + DECISION_TOOL_SCHEMA
+    turn: int = 0                    # 下一轮 loop 索引
+    max_turns: int = 100
+    tool_calls_made: int = 0
+    empty_fails: int = 0
+    last_empty_tool: str = ""
+
+
 # ── Public serialization API ───────────────────────────────────────────────
 
 def to_dict(obj: Any) -> dict[str, Any]:

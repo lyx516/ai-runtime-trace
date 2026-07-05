@@ -185,6 +185,41 @@ CREATE TABLE IF NOT EXISTS llm_input_snapshots (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_llm_input_run ON llm_input_snapshots(run_id, role_id, state_id, created_at);
+
+CREATE TABLE IF NOT EXISTS agent_session_checkpoints (
+    run_id TEXT NOT NULL,
+    role_id TEXT NOT NULL,
+    state_id TEXT NOT NULL,
+    session_state_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, role_id, state_id)
+);
+
+CREATE TABLE IF NOT EXISTS run_performance (
+    run_id TEXT PRIMARY KEY,
+    success_score INTEGER NOT NULL DEFAULT 0,
+    summary TEXT NOT NULL DEFAULT '',
+    agent_scores TEXT NOT NULL DEFAULT '{}',
+    bottleneck_state TEXT NOT NULL DEFAULT '',
+    tool_stats TEXT NOT NULL DEFAULT '{}',
+    suggestions TEXT NOT NULL DEFAULT '',
+    evaluated_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS run_agent_feedback (
+    row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'manager',
+    category TEXT NOT NULL DEFAULT '',
+    suggestion TEXT NOT NULL DEFAULT '',
+    evidence TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    applied_run_id TEXT DEFAULT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_agent ON run_agent_feedback(agent_id, status);
 """
 
 
@@ -731,6 +766,145 @@ class RuntimeStore:
         conn = self.connect()
         row = conn.execute("SELECT round_counters FROM runs WHERE run_id = ?", (run_id,)).fetchone()
         return json_loads(row["round_counters"]).get(state_id, 0)
+
+    # ── Agent session checkpoint ───────────────────────────────────────────
+
+    def save_agent_session_checkpoint(self, state_json: str, run_id: str, role_id: str, state_id: str) -> None:
+        """INSERT OR REPLACE checkpoint for (run_id, role_id, state_id)."""
+        conn = self.connect()
+        conn.execute(
+            """INSERT OR REPLACE INTO agent_session_checkpoints
+               (run_id, role_id, state_id, session_state_json, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (run_id, role_id, state_id, state_json, _now()),
+        )
+        conn.commit()
+
+    def load_agent_session_checkpoint(self, run_id: str, role_id: str, state_id: str) -> dict[str, Any] | None:
+        """Load checkpoint or return None."""
+        conn = self.connect()
+        row = conn.execute(
+            "SELECT session_state_json FROM agent_session_checkpoints WHERE run_id=? AND role_id=? AND state_id=?",
+            (run_id, role_id, state_id),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return json_loads(row["session_state_json"])
+        except Exception:
+            return None
+
+    def delete_agent_session_checkpoint(self, run_id: str, role_id: str, state_id: str) -> None:
+        """Delete checkpoint after successful session completion."""
+        conn = self.connect()
+        conn.execute(
+            "DELETE FROM agent_session_checkpoints WHERE run_id=? AND role_id=? AND state_id=?",
+            (run_id, role_id, state_id),
+        )
+        conn.commit()
+
+    def agent_has_decision(self, run_id: str, state_id: str, role_id: str) -> bool:
+        """Check if a role has already submitted a decision for this state. 幂等性保证。"""
+        conn = self.connect()
+        row = conn.execute(
+            "SELECT 1 FROM decisions WHERE run_id=? AND state_id=? AND role_id=?",
+            (run_id, state_id, role_id),
+        ).fetchone()
+        return row is not None
+
+    # ── Run performance ─────────────────────────────────────────────────
+
+    def save_run_performance(
+        self, run_id: str, success_score: int, summary: str,
+        agent_scores: dict, bottleneck_state: str,
+        tool_stats: dict, suggestions: str,
+    ) -> None:
+        """INSERT OR REPLACE run performance evaluation."""
+        conn = self.connect()
+        conn.execute(
+            """INSERT OR REPLACE INTO run_performance
+               (run_id, success_score, summary, agent_scores, bottleneck_state,
+                tool_stats, suggestions, evaluated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (run_id, success_score, summary, json_dumps(agent_scores),
+             bottleneck_state, json_dumps(tool_stats), suggestions, _now()),
+        )
+        conn.commit()
+
+    def load_run_performance(self, run_id: str) -> dict[str, Any] | None:
+        """Load performance evaluation for a run, or None."""
+        conn = self.connect()
+        row = conn.execute(
+            "SELECT * FROM run_performance WHERE run_id=?", (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "run_id": row["run_id"],
+            "success_score": row["success_score"],
+            "summary": row["summary"],
+            "agent_scores": json_loads(row["agent_scores"]),
+            "bottleneck_state": row["bottleneck_state"],
+            "tool_stats": json_loads(row["tool_stats"]),
+            "suggestions": row["suggestions"],
+            "evaluated_at": row["evaluated_at"],
+        }
+
+    # ── Agent feedback ───────────────────────────────────────────────────
+
+    def save_agent_feedback(
+        self, run_id: str, agent_id: str, category: str,
+        suggestion: str, evidence: str, source: str = "manager",
+    ) -> int:
+        """Insert a per-agent feedback entry. Returns row_id."""
+        conn = self.connect()
+        now = _now()
+        cur = conn.execute(
+            """INSERT INTO run_agent_feedback
+               (run_id, agent_id, source, category, suggestion, evidence, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+            (run_id, agent_id, source, category, suggestion, evidence, now, now),
+        )
+        conn.commit()
+        return cur.lastrowid or 0
+
+    def load_agent_feedback(
+        self, agent_id: str, status: str = "pending", limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Load pending feedback for an agent."""
+        conn = self.connect()
+        rows = conn.execute(
+            """SELECT * FROM run_agent_feedback
+               WHERE agent_id=? AND status=? ORDER BY row_id DESC LIMIT ?""",
+            (agent_id, status, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def mark_feedback_applied(self, row_id: int, applied_run_id: str = "") -> None:
+        """Mark feedback as applied."""
+        conn = self.connect()
+        conn.execute(
+            "UPDATE run_agent_feedback SET status='applied', applied_run_id=?, updated_at=? WHERE row_id=?",
+            (applied_run_id, _now(), row_id),
+        )
+        conn.commit()
+
+    def mark_feedback_dismissed(self, row_id: int) -> None:
+        """Soft-delete feedback by marking as dismissed."""
+        conn = self.connect()
+        conn.execute(
+            "UPDATE run_agent_feedback SET status='dismissed', updated_at=? WHERE row_id=?",
+            (_now(), row_id),
+        )
+        conn.commit()
+
+    def load_all_pending_feedback(self) -> list[dict[str, Any]]:
+        """Load all pending feedback across all agents."""
+        conn = self.connect()
+        rows = conn.execute(
+            "SELECT * FROM run_agent_feedback WHERE status='pending' ORDER BY agent_id, row_id",
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 # ── Internal transaction context manager ─────────────────────────────────────

@@ -18,7 +18,7 @@ def main():
     # Locate the package root (where agents/, tools/, shared/ live)
     pkg_dir = Path(__file__).resolve().parent
     project_root = os.environ.get("HERMES_FLOW_PROJECT_ROOT") or str(pkg_dir.parent.parent)
-    runs_dir = os.environ.get("HERMES_FLOW_RUNS_DIR") or str(pkg_dir.parent.parent / ".hermes-flow" / "runs")
+    runs_dir = os.environ.get("HERMES_FLOW_RUNS_DIR") or str(pkg_dir / ".hermes-flow" / "runs")
 
     # Ensure hermes_flow is importable (in case not pip-installed)
     hermes_flow_dir = pkg_dir.parent.parent
