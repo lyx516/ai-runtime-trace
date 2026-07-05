@@ -171,8 +171,9 @@ def manager_select_agents(goal: str, agents: dict) -> tuple[list[str], list[dict
     """
     team_skills = _load_team_skills()
 
-    # Build team skill listing for the LLM prompt
+    # Build team skill listing for the LLM prompt — include full doc_body as reference
     team_lines = []
+    team_docs = []
     for s in team_skills:
         members = ", ".join(s["agents"]) if s["agents"] else "(无)"
         team_lines.append(
@@ -182,15 +183,16 @@ def manager_select_agents(goal: str, agents: dict) -> tuple[list[str], list[dict
             f"    成员: {members}\n"
             f"    流程: {len(s['flow'])} 个 state\n"
         )
+        if s.get("doc"):
+            team_docs.append(f"### {s['file']}\n{s['doc'][:2000]}")
     team_skills_text = (
         "\n## 可用班底技能\n"
         + "\n".join(team_lines)
-        + "\n\n你**必须**从以上班底中选择一个合适的（通过 team 字段返回文件名，如 'spec-team.md'）。"
-        "\n你也可以混编——选用某个班底的部分成员，或从多个班底各取 agent。"
-        "如果没有任何班底匹配，也可以自定义成员组合，此时 team 返回 'custom'。"
-        "\n对于简单的聊天式任务，只选 1 个 agent 即可。"
-        "\n对于复杂开发任务，选 3-6 个 agent。"
     ) if team_skills else "\n（无可用的预定义班底，请根据 agent 池自定义组合。）"
+    team_docs_text = (
+        "\n## 班底技能详细文档（含 gate 设计指南）\n\n"
+        + "\n\n---\n\n".join(team_docs)
+    ) if team_docs else ""
 
     # Build agent pool listing
     from trait_loader import resolve_agent_tools
@@ -222,6 +224,8 @@ def manager_select_agents(goal: str, agents: dict) -> tuple[list[str], list[dict
     system = f"""你是流程管理专家。根据用户目标，选择合适的 Agent 并生成完整的 flow 拓扑。
 
 {team_skills_text}
+
+{team_docs_text}
 
 ## 响应格式
 
