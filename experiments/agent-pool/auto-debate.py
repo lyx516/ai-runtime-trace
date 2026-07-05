@@ -1205,7 +1205,7 @@ def _run_fsm_loop(store, run_id: str, goal: str, agent_ids: list[str], agents: d
         if not srow:
             break
         state_dict = json.loads(srow["state_json"])
-        gate = state_dict.get("gate", {})
+        gate = state_dict.get("gate") or {}
         required_roles = gate.get("required_roles", [])
         pass_vals = gate.get("pass_values", ["APPROVE"])
         fail_vals = gate.get("fail_values", [])
