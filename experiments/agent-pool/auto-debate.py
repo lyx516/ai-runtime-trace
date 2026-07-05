@@ -2095,14 +2095,25 @@ def _evolve_agent(agent_id: str, apply: bool = False):
         for fb in all_fb
     )
 
+    soul_size = len(soul_content)
+    memory_size = len(memory_content)
+    MAX_MEMORY = 4096   # 4KB hard cap
+    MAX_SKILL  = 8192   # 8KB hard cap
+
+    size_info = f"SOUL: {soul_size}B, Memory: {memory_size}B/{MAX_MEMORY}B, SKILL: N/A"
+    if agent_dir.joinpath("SKILL.md").exists():
+        skill_size = agent_dir.joinpath("SKILL.md").stat().st_size
+        size_info = f"SOUL: {soul_size}B, Memory: {memory_size}B/{MAX_MEMORY}B, SKILL: {skill_size}B/{MAX_SKILL}B"
+
     system = f"""你是 EvolutionAgent——一个精确、谨慎的 agent 修改执行者。
 你**不能自由发挥**，只能基于 feedback 中的具体证据进行定向修改。
 
 当前 agent: {agent_id}
+文件大小限制: {size_info}
 
 你的能力：
-- update_memory: 追加或修正 Memory.md
-- update_skill: patch 或新增 SKILL.md
+- update_memory: 追加或修正 Memory.md（硬上限 {MAX_MEMORY}B，超限时只能替换旧内容）
+- update_skill: patch 或新增 SKILL.md（硬上限 {MAX_SKILL}B，超限时只能替换旧内容）
 - add_tool: 从工具池中分配新工具
 - dismiss: 如果 feedback 不适用，标记为 dismissed
 
@@ -2110,7 +2121,9 @@ def _evolve_agent(agent_id: str, apply: bool = False):
 1. 每条修改必须引用具体的 feedback 证据
 2. 最小改动——能不改就不改
 3. 如果 feedback 已过时或不适用，果断 dismiss
-4. 响应 JSON: {{"actions": [{{"type": "update_memory|update_skill|add_tool|dismiss", "feedback_ids": [row_id,...], "detail": "具体修改内容"}}]}}"""
+4. 接近上限时，优先替换旧的 Evolution Update 而非追加
+5. 避免写入已在文件中存在的内容（去重）
+6. 响应 JSON: {{"actions": [{{"type": "update_memory|update_skill|add_tool|dismiss", "detail": "具体修改内容"}}]}}"""
 
     user = f"""## Agent: {agent_id}
 
@@ -2154,12 +2167,29 @@ def _evolve_agent(agent_id: str, apply: bool = False):
                 applied += len(all_fb)
             elif atype in ("update_skill", "update_memory"):
                 target_file = agent_dir / ("SKILL.md" if atype == "update_skill" else "Memory.md")
+                max_bytes = MAX_SKILL if atype == "update_skill" else MAX_MEMORY
+                current_size = target_file.stat().st_size if target_file.exists() else 0
+
                 if not detail.startswith("#"):
                     detail = f"\n## Evolution Update\n{detail}\n"
+                new_content = f"\n{detail}\n"
+
+                # Dedup: skip if already present
+                if target_file.exists():
+                    existing = target_file.read_text()
+                    if detail.strip() in existing:
+                        print(f"  ⏭  Skipped {target_file.name} (content already exists)")
+                        continue
+
+                # Hard limit check
+                if current_size + len(new_content) > max_bytes:
+                    print(f"  ⚠️  {target_file.name} at {current_size}B/{max_bytes}B — cannot append. Trim old Evolution Updates manually.")
+                    continue
+
                 with open(target_file, "a") as f:
-                    f.write(f"\n{detail}\n")
+                    f.write(new_content)
                 applied += 1
-                print(f"  ✅ Updated {target_file.name}")
+                print(f"  ✅ Updated {target_file.name} ({current_size}B → {current_size + len(new_content)}B)")
         # Mark all feedback as applied
         for fb in all_fb:
             store.mark_feedback_applied(fb["row_id"])
