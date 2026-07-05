@@ -2411,7 +2411,21 @@ def main():
             }]
             print(f"  💬 简单任务，单 agent 直接回答")
         else:
-            print("  ⚠️ 未匹配到班底，使用默认空拓扑")
+            # Fallback: generate a linear pipeline from selected agents
+            _spec_agents = [a for a in agent_ids if a in ("spec-writer","designer")]
+            _plan_agents = [a for a in agent_ids if a in ("plan-maker","analyst")]
+            _task_agents = [a for a in agent_ids if a in ("task-breaker",)]
+            _impl_agents = [a for a in agent_ids if a in ("implementer",)]
+            _review_agents = [a for a in agent_ids if a in ("code-reviewer","reviewer","critic","tester")]
+            _remaining = [a for a in agent_ids if a not in _spec_agents+_plan_agents+_task_agents+_impl_agents+_review_agents]
+            flow_topology = []
+            if _spec_agents: flow_topology.append({"state": "SPEC", "description": "编写规格文档", "actors": "+".join(_spec_agents), "gate": {"type": "product", "file": "spec.md", "pass": "PLAN" if _plan_agents else "TASKS" if _task_agents else "IMPLEMENT" if _impl_agents else "REVIEW", "fail": "SPEC", "max": 3}, "output_artifacts": ["spec.md"]})
+            if _plan_agents: flow_topology.append({"state": "PLAN", "description": "编写技术方案", "actors": "+".join(_plan_agents), "gate": {"type": "product", "file": "plan.md", "pass": "TASKS" if _task_agents else "IMPLEMENT" if _impl_agents else "REVIEW", "fail": "PLAN", "max": 3}, "output_artifacts": ["plan.md"]})
+            if _task_agents: flow_topology.append({"state": "TASKS", "description": "拆解任务", "actors": "+".join(_task_agents), "gate": {"type": "product", "file": "tasks.md", "pass": "IMPLEMENT" if _impl_agents else "REVIEW", "fail": "TASKS", "max": 3}, "output_artifacts": ["tasks.md"]})
+            if _impl_agents: flow_topology.append({"state": "IMPLEMENT", "description": "编写代码+测试", "actors": "+".join(_impl_agents), "gate": {"type": "product", "file": "implementation-report.md", "pass": "REVIEW", "fail": "IMPLEMENT", "max": 5}, "output_artifacts": ["implementation-report.md"]})
+            if _review_agents: flow_topology.append({"state": "REVIEW", "description": "代码审查", "actors": "+".join(_review_agents), "gate": {"type": "product", "file": "review.md", "pass": "DONE", "fail": "REVIEW", "max": 3}, "output_artifacts": ["review.md"]})
+            if _remaining: flow_topology.append({"state": "DONE", "description": "综合执行", "actors": "+".join(_remaining), "gate": {"type": "decision", "pass": "DONE", "fail": "ABORT", "max": 3}})
+            print(f"  🏗️ 自动生成 pipeline: {' → '.join(s['state'] for s in flow_topology)}")
 
     # Phase 2: Manager generates flow YAML + briefs agents
     print("\n📄 生成 Flow YAML...")
