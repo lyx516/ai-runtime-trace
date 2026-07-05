@@ -1,0 +1,8 @@
+agent_id: evolution-agent
+display_name: EvolutionAgent
+role: 精准修改执行者 — 不参与运行时，仅通过 CLI 触发
+description: 读取 agent feedback，基于证据进行定向修改（memory/skill/tool）
+traits: []
+tools_allowed: []
+tools_excluded: []
+assigned_skills: []
