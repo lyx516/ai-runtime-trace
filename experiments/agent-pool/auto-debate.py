@@ -133,30 +133,71 @@ def call_llm(system: str, prompt: str, model: str = "deepseek-v4-flash",
 #  Phase 1: 管理 Agent 分析任务并选择 Agent
 # ══════════════════════════════════════════════════════════════════════
 
-def manager_select_agents(goal: str, agents: dict) -> list[str]:
-    """Manager agent analyzes goal and selects appropriate agents."""
-    # Read manager's team skills
-    manager_skills_dir = Path(__file__).resolve().parent / "agents" / "manager" / "skills"
-    team_skills_text = ""
-    if manager_skills_dir.exists():
-        team_lines = []
-        for f in sorted(manager_skills_dir.iterdir()):
-            if f.suffix == ".md":
-                name = f.stem
-                content = f.read_text(encoding="utf-8")
-                descline = [l for l in content.split("\n") if l.strip() and not l.startswith("#")]
-                desc = descline[1] if len(descline) > 1 else name
-                members = [l.strip("- `") for l in content.split("\n") if "`" in l]
-                team_lines.append(f"  {name}: {desc} | 成员: {', '.join(members[:6])}")
-        if team_lines:
-            team_skills_text = "\n可用班底技能:\n" + "\n".join(team_lines)
+def _load_team_skills() -> list[dict]:
+    """Scan manager/skills/*.md, parse YAML frontmatter + doc body into skill dicts."""
+    import yaml as yaml_lib
+    skills_dir = Path(__file__).resolve().parent / "agents" / "manager" / "skills"
+    skills = []
+    if not skills_dir.exists():
+        return skills
+    for f in sorted(skills_dir.glob("*.md")):
+        text = f.read_text(encoding="utf-8")
+        if not text.startswith("---"):
+            continue
+        parts = text.split("---", 2)
+        if len(parts) < 3:
+            continue
+        fm = yaml_lib.safe_load(parts[1])
+        doc_body = parts[2].strip()
+        skills.append({
+            "file": f.name,
+            "name": fm.get("name", f.stem),
+            "description": fm.get("description", ""),
+            "agents": fm.get("agents", []),
+            "flow": fm.get("flow", []),
+            "output_base": fm.get("output_base", ""),
+            "doc": doc_body,
+        })
+    return skills
 
+
+def manager_select_agents(goal: str, agents: dict) -> tuple[list[str], list[dict], str]:
+    """Manager agent analyzes goal and selects appropriate agents + team skill.
+
+    Returns (selected_agent_ids, flow_topology, output_base).
+    flow_topology is the 'flow' array from the matched team skill (parsed YAML
+    frontmatter), or a generated topology when no team skill is picked.
+    output_base is the matched skill's output template (e.g. "output/{flow_id}").
+    """
+    team_skills = _load_team_skills()
+
+    # Build team skill listing for the LLM prompt
+    team_lines = []
+    for s in team_skills:
+        members = ", ".join(s["agents"]) if s["agents"] else "(无)"
+        team_lines.append(
+            f"  {s['file']}:\n"
+            f"    名称: {s['name']}\n"
+            f"    描述: {s['description'][:120]}\n"
+            f"    成员: {members}\n"
+            f"    流程: {len(s['flow'])} 个 state\n"
+        )
+    team_skills_text = (
+        "\n## 可用班底技能\n"
+        + "\n".join(team_lines)
+        + "\n\n你**必须**从以上班底中选择一个合适的（通过 team 字段返回文件名，如 'spec-team.md'）。"
+        "\n你也可以混编——选用某个班底的部分成员，或从多个班底各取 agent。"
+        "如果没有任何班底匹配，也可以自定义成员组合，此时 team 返回 'custom'。"
+        "\n对于简单的聊天式任务，只选 1 个 agent 即可。"
+        "\n对于复杂开发任务，选 3-6 个 agent。"
+    ) if team_skills else "\n（无可用的预定义班底，请根据 agent 池自定义组合。）"
+
+    # Build agent pool listing
     from trait_loader import resolve_agent_tools
     agent_list_lines = []
     for aid, info in agents.items():
         if aid == "manager":
             continue
-        # Resolve effective tools via trait system
         try:
             tools = resolve_agent_tools(info)
             tools_str = ", ".join(tools) if tools else "(无)"
@@ -178,40 +219,61 @@ def manager_select_agents(goal: str, agents: dict) -> list[str]:
         )
     agent_list = "\n".join(agent_list_lines)
 
-    system = f"""你是流程管理专家。根据用户目标从 Agent 池中选择 1-6 个。{team_skills_text}
+    system = f"""你是流程管理专家。根据用户目标选择班底技能并选出合适的 Agent。{team_skills_text}
 
-选择原则：
-- 闲聊、简单问答（讲笑话、问好、天气） → direct-chat (任意1个 agent, 如 writer 或 designer)
-- 纯方案推演/辩论 → debate-team (designer + critic + mediator + decider)
-- 完整开发流水线 → spec-team (spec-writer + plan-maker + task-breaker + implementer + code-reviewer)
-- 调研分析 → research-team (researcher + analyst + writer)
-- 全栈（辩论→实现→文档） → fullstack-team
-- 简单修复 → quick-fix-team (implementer + tester)
-- 也可以混编多个班底
+## 响应格式
 
-对于简单的聊天式任务，只选 1 个 agent 即可，team 用 "direct-chat"。
-对于复杂开发任务，选 3-6 个 agent。
+严格 JSON，不要任何其他文本：
 
-响应格式（严格 JSON）：
-{{"agents": ["id1","id2",...], "reason": "选择理由", "team": "使用的班底名称"}}
+```json
+{{
+  "agents": ["id1", "id2", ...],
+  "team": "选择的班底文件名，如 spec-team.md，无匹配则返回 custom",
+  "reason": "选择理由（简述任务特点 → 班底匹配逻辑）"
+}}
+```
 """
 
-    user = f"## 任务\n{goal}\n\n## Agent 池\n{agent_list}\n\n请选择。"
+    user = f"## 任务\n{goal}\n\n## Agent 池\n{agent_list}\n\n请选择班底和 Agent。"
     print("\n🤔 管理 Agent 正在分析任务...")
     result = call_llm(system, user, temperature=0.3)
     selected = result.get("agents", [])
+    team_file = result.get("team", "")
     reason = result.get("reason", "")
-    team = result.get("team", "")
 
     valid = [a for a in selected if a in agents and a != "manager"]
     if len(valid) < 1:
         valid = ["designer", "critic", "mediator", "decider"]
+        team_file = "debate-team.md"
         reason = "选择不足，使用默认辩论组合"
+
+    # Resolve flow topology from matched team skill
+    flow_topology = []
+    matched_skill = None
+    for s in team_skills:
+        if s["file"] == team_file:
+            matched_skill = s
+            flow_topology = list(s.get("flow", []))
+            break
+
+    # Store the matched skill's full frontmatter for later use
+    if matched_skill and flow_topology:
+        matched_info = matched_skill
+    else:
+        # No match: generate a simple single-agent topology
+        if len(valid) == 1:
+            flow_topology = [{
+                "state": "DONE",
+                "description": goal[:80],
+                "actors": valid[0],
+                "gate": {"type": "decision", "pass": "DONE", "fail": "ABORT", "max": 3},
+            }]
+        matched_info = matched_skill or {"output_base": ""}
 
     print(f"  选择了: {', '.join(valid)}")
     print(f"  理由: {reason}" if reason else "")
-    print(f"  班底: {team}" if team else "")
-    return valid
+    print(f"  班底: {team_file}" if team_file else "")
+    return valid, flow_topology, (matched_info or {"output_base": ""}).get("output_base", "")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -2287,46 +2349,11 @@ def main():
         ref_count = len(list(has_refs.iterdir())) if has_refs.exists() and has_refs.is_dir() else 0
         print(f"  📁 {aid:20s} | {info.get('role',''):15s} | refs={ref_count}")
 
-    # Phase 1: Manager selects agents + team skill
-    agent_ids = manager_select_agents(goal, agents)
+    # Phase 1: Manager selects agents + team skill (now returns flow topology)
+    agent_ids, flow_topology, output_base = manager_select_agents(goal, agents)
 
-    # Read team flow topology from manager/skills/ (YAML frontmatter)
-    import yaml as yaml_lib
-    team_skills_dir = Path(__file__).resolve().parent / "agents" / "manager" / "skills"
-    flow_topology = []
-
-    # Find the skill whose agent set best overlaps with selected agents
-    selected_set = set(agent_ids)
-    best_match = None
-    best_overlap = 0
-    for skill_file in sorted(team_skills_dir.glob("*.md")):
-        text = skill_file.read_text(encoding="utf-8")
-        if not text.startswith("---"):
-            continue
-        parts = text.split("---", 2)
-        if len(parts) < 3:
-            continue
-        fm = yaml_lib.safe_load(parts[1])
-        team_agents = set(fm.get("agents", []))
-        if not team_agents:
-            continue
-        overlap = len(team_agents & selected_set)
-        # Pick the skill with highest agent overlap
-        if overlap > best_overlap:
-            best_overlap = overlap
-            best_match = (skill_file, fm)
-
-    if best_match and best_overlap >= max(2, len(selected_set) * 0.6):
-        skill_file, fm = best_match
-        flow_topology = fm.get("flow", [])
-        output_base = fm.get("output_base", "")
-        print(f"  采用班底: {fm.get('name', skill_file.stem)} ({len(flow_topology)} 个状态, 匹配度 {best_overlap}/{len(selected_set)})")
-    else:
-        print(f"  ⚠️ 未找到匹配班底 (最佳: {best_overlap}/{len(selected_set)})")
-        output_base = ""
     if not flow_topology:
         if len(agent_ids) == 1:
-            # Single agent: one DONE state, no gate
             flow_topology = [{
                 "state": "DONE",
                 "description": goal[:80],
