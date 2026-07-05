@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Tool Registry — auto-generate OpenAI tool schemas from tools/<id>/__init__.py.
+"""Tool Registry — hand-crafted OpenAI tool schemas + unified dispatch.
 
 Each tool module exports run(args: dict) -> dict. This registry:
 1. Discovers all tools in tools/<id>/
-2. Reads meta.yaml per agent for tools_allowed + universal tools
+2. Uses hand-crafted schemas (not auto-generated from docstrings)
 3. Generates OpenAI-compatible function-calling schemas
-4. Executes tools via the existing tools_runner
+4. Executes tools with result truncation and error sanitization
 """
 
 import importlib
@@ -34,25 +34,381 @@ UNIVERSAL_TOOLS = {
     "human_clarifier",
 }
 
+# ── Per-tool max result size (chars) before truncation ─────────────────
+# These prevent web_search / file_read output from flooding context.
+_TOOL_MAX_RESULT_CHARS: dict[str, int] = {
+    "web_search": 3_000,
+    "file_read": 8_000,
+    "search_files": 4_000,
+    "write_file": 500,
+    "patch": 1_000,
+    "code_exec": 5_000,
+    "terminal": 5_000,
+}
+_DEFAULT_MAX_RESULT_CHARS = 2_000
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Hand-crafted tool schemas (inspired by Hermes Agent)
+# ═══════════════════════════════════════════════════════════════════════
+
+_HAND_CRAFTED_SCHEMAS: dict[str, dict] = {
+    # ── write_file ─────────────────────────────────────────────────────
+    "write_file": {
+        "name": "write_file",
+        "description": (
+            "Create a new file or completely overwrite an existing file. "
+            "Creates parent directories automatically. Both 'path' and 'content' are REQUIRED. "
+            "Use this for creating deliverable files (spec.md, plan.md, tasks.md, etc.). "
+            "For editing existing files, use the 'patch' tool instead."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "File path relative to workspace. Example: 'output/auto-xxx/spec.md'",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Complete file content as a string.",
+                },
+            },
+            "required": ["path", "content"],
+        },
+    },
+    # ── file_read ───────────────────────────────────────────────────────
+    "file_read": {
+        "name": "file_read",
+        "description": (
+            "Read a text file with line numbers and pagination. "
+            "Use offset and limit for large files."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "File path relative to workspace.",
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Line number to start reading from (1-indexed, default: 0).",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of lines to read (default: 50, max: 500).",
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    # ── patch ───────────────────────────────────────────────────────────
+    "patch": {
+        "name": "patch",
+        "description": (
+            "Edit existing files with targeted find-and-replace. "
+            "mode='replace': find old_string in a file and replace with new_string. "
+            "Requires path, old_string, new_string. "
+            "mode='patch': apply a V4A multi-file batch edit. "
+            "To CREATE a new file, use write_file instead."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["replace", "patch"],
+                    "description": "'replace' for single-file edit, 'patch' for V4A multi-file batch.",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "File path. Required for replace mode.",
+                },
+                "old_string": {
+                    "type": "string",
+                    "description": "Text to find. Required for replace mode.",
+                },
+                "new_string": {
+                    "type": "string",
+                    "description": "Replacement text. Required for replace mode.",
+                },
+                "patch": {
+                    "type": "string",
+                    "description": "V4A patch content. Required for patch mode.",
+                },
+                "replace_all": {
+                    "type": "boolean",
+                    "description": "Replace all occurrences. Default: false.",
+                },
+            },
+            "required": ["mode"],
+        },
+    },
+    # ── search_files ────────────────────────────────────────────────────
+    "search_files": {
+        "name": "search_files",
+        "description": (
+            "Search file contents (grep) or find files by name. "
+            "Use type='content' to search inside files, type='files' to list filenames."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "type": {
+                    "type": "string",
+                    "enum": ["content", "files"],
+                    "description": "'content' to grep, 'files' to list filenames.",
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": "Search pattern — regex for content, glob for files.",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Directory to search in (default: current directory).",
+                },
+                "file_glob": {
+                    "type": "string",
+                    "description": "Filter files by extension pattern, e.g. '*.py'.",
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Skip first N results (default: 0).",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum results to return (default: 50, max: 200).",
+                },
+                "context": {
+                    "type": "integer",
+                    "description": "Lines of context around matches (default: 0).",
+                },
+            },
+            "required": ["pattern"],
+        },
+    },
+    # ── web_search ──────────────────────────────────────────────────────
+    "web_search": {
+        "name": "web_search",
+        "description": (
+            "Search the web for information. Use curl to fetch search results. "
+            "Returns a summary of top results. Use for research and fact-checking."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query string.",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    # ── code_exec ───────────────────────────────────────────────────────
+    "code_exec": {
+        "name": "code_exec",
+        "description": (
+            "Execute a Python script in an isolated environment. "
+            "The script can use the Python standard library. "
+            "Use for data processing, computation, or file manipulation."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "Python code to execute.",
+                },
+            },
+            "required": ["code"],
+        },
+    },
+    # ── terminal ────────────────────────────────────────────────────────
+    "terminal": {
+        "name": "terminal",
+        "description": (
+            "Execute a shell command. Use for system operations — "
+            "mkdir, mv, cp, git, pip install, etc."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "Shell command to execute.",
+                },
+                "workdir": {
+                    "type": "string",
+                    "description": "Working directory for the command.",
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Max execution time in seconds.",
+                },
+            },
+            "required": ["command"],
+        },
+    },
+}
+
+# ── Universal tool schemas ─────────────────────────────────────────────
+
+_UNIVERSAL_TOOL_SCHEMAS: dict[str, dict] = {
+    "memory_read": {
+        "name": "memory_read",
+        "description": "Read agent's persistent memory (key-value store). Use to recall context from previous sessions.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string", "description": "Memory key to read."},
+            },
+            "required": ["key"],
+        },
+    },
+    "memory_write": {
+        "name": "memory_write",
+        "description": "Write a value to agent's persistent memory.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string", "description": "Memory key."},
+                "value": {"type": "string", "description": "Value to store."},
+            },
+            "required": ["key", "value"],
+        },
+    },
+    "agent_message_send": {
+        "name": "agent_message_send",
+        "description": "Send a message to another agent. Use for collaboration and clarification.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "recipients": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of agent IDs to send to.",
+                },
+                "content": {"type": "string", "description": "Message content."},
+            },
+            "required": ["recipients", "content"],
+        },
+    },
+    "agent_inbox_read": {
+        "name": "agent_inbox_read",
+        "description": "Read messages sent to you by other agents.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
+# ── Decision tool — not in tools/ dir ──────────────────────────────────
+
+DECISION_TOOL_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "submit_decision",
+        "description": (
+            "Submit your final decision to advance the flow. "
+            "Call this when you have completed your work and are ready to move to the next state."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "value": {
+                    "type": "string",
+                    "enum": ["APPROVE", "REQUEST_CHANGES", "BLOCKED"],
+                    "description": (
+                        "APPROVE = work done, advance. "
+                        "REQUEST_CHANGES = need revision. "
+                        "BLOCKED = cannot continue."
+                    ),
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Brief explanation (1-2 sentences in Chinese or English).",
+                },
+            },
+            "required": ["value", "reason"],
+        },
+    },
+}
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Schema building (hand-crafted, minimal fallback)
+# ═══════════════════════════════════════════════════════════════════════
+
+def build_tool_schema(tool_id: str, tool_info: dict) -> dict:
+    """Return an OpenAI-format tool schema for *tool_id*.
+
+    Prefers hand-crafted schemas; falls back to a minimal auto-generated
+    schema when the tool does not have a hand-crafted entry.
+    """
+    # Hand-crafted schema
+    if tool_id in _HAND_CRAFTED_SCHEMAS:
+        return {"type": "function", "function": _HAND_CRAFTED_SCHEMAS[tool_id]}
+
+    # Universal tools with hand-crafted schemas
+    if tool_id in _UNIVERSAL_TOOL_SCHEMAS:
+        return {"type": "function", "function": _UNIVERSAL_TOOL_SCHEMAS[tool_id]}
+
+    # Fallback: minimal auto-generated schema
+    run_fn = tool_info.get("run_fn")
+    doc = tool_info.get("doc", f"Tool: {tool_id}")
+    properties = _fallback_properties(run_fn)
+    return {
+        "type": "function",
+        "function": {
+            "name": tool_id,
+            "description": doc,
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": list(properties.keys()),
+            },
+        },
+    }
+
+
+def _fallback_properties(run_fn) -> dict:
+    """Minimal fallback: extract .get() keys from run_fn source."""
+    if run_fn is None:
+        return {}
+    try:
+        source = inspect.getsource(run_fn)
+    except (OSError, TypeError):
+        return {}
+    import re
+    keys = re.findall(r'\.get\s*\(\s*["\']([^"\']+)["\']', source)
+    seen = set()
+    props = {}
+    for k in keys:
+        if k not in seen:
+            seen.add(k)
+            props[k] = {"type": "string", "description": k.replace("_", " ")}
+    return props
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Tool discovery (unchanged from original)
+# ═══════════════════════════════════════════════════════════════════════
 
 def _add_paths():
-    """Ensure tools/ is importable."""
     tools_path = str(TOOLS_DIR)
     if tools_path not in sys.path:
         sys.path.insert(0, tools_path)
 
 
 def _load_tool_module(tool_id: str):
-    """Dynamically import tools.<tool_id> and return the module."""
     _add_paths()
     try:
         return importlib.import_module(f"tools.{tool_id}")
-    except (ImportError, ModuleNotFoundError) as e:
+    except (ImportError, ModuleNotFoundError):
         return None
 
 
 def discover_all_tools() -> dict[str, dict]:
-    """Scan tools/ directory and return {tool_id: {module, run_fn, doc}}."""
     if not TOOLS_DIR.exists():
         return {}
     tools = {}
@@ -79,213 +435,11 @@ def discover_all_tools() -> dict[str, dict]:
     return tools
 
 
-def _infer_type_from_default(default: Any) -> str:
-    """Infer JSON Schema type from a Python default value."""
-    if default is None:
-        return "string"
-    if isinstance(default, bool):
-        return "boolean"
-    if isinstance(default, int):
-        return "integer"
-    if isinstance(default, float):
-        return "number"
-    if isinstance(default, str):
-        return "string"
-    if isinstance(default, list):
-        return "array"
-    if isinstance(default, dict):
-        return "object"
-    return "string"
-
-
-def _infer_type_from_name(name: str) -> str:
-    """Infer JSON Schema type from parameter name heuristics."""
-    name_lower = name.lower()
-    if any(kw in name_lower for kw in ("count", "limit", "offset", "size", "timeout", "max", "min", "port", "index")):
-        return "integer"
-    if any(kw in name_lower for kw in ("enable", "disabled", "verbose", "flag", "recursive")):
-        return "boolean"
-    return "string"
-
-
-def _generate_parameter_schema(run_fn) -> dict:
-    """Given a run(args: dict) function, infer the JSON Schema of the 'args' dict.
-
-    Uses the docstring to extract parameter descriptions, and the function body's
-    .get() calls to infer parameter names and defaults.
-    """
-    # Try to get signature
-    try:
-        sig = inspect.signature(run_fn)
-    except (ValueError, TypeError):
-        return {"type": "object", "properties": {}, "description": "Arbitrary key-value arguments."}
-
-    params = list(sig.parameters.values())
-    if not params:
-        return {"type": "object", "properties": {}, "description": "No parameters."}
-
-    first_param = params[0]
-    if first_param.name != "args":
-        # If the function takes named args directly, use those
-        properties = {}
-        required = []
-        for p in params:
-            if p.name == "self" or p.name == "cls":
-                continue
-            default = None if p.default is inspect.Parameter.empty else p.default
-            has_default = p.default is not inspect.Parameter.empty
-            ptype = _infer_type_from_default(default) if has_default else _infer_type_from_name(p.name)
-            prop = {"type": ptype}
-            if not has_default:
-                required.append(p.name)
-            properties[p.name] = prop
-        return {"type": "object", "properties": properties, "required": required}
-
-    # First param is 'args' (dict) — extract from docstring
-    # The docstring format expected:
-    #   Args:
-    #     key_name (type): description
-    doc = (run_fn.__doc__ or "") + (run_fn.__module__ and (getattr(inspect.getmodule(run_fn), "__doc__", "") or ""))
-
-    # Also check for .get("key", default) calls in source
-    properties = {}
-    required = []
-
-    try:
-        source = inspect.getsource(run_fn)
-    except (OSError, TypeError):
-        source = ""
-
-    # Find .get("key", default) or .get('key', default) patterns
-    import re
-    get_calls = re.findall(r'\.get\s*\(\s*["\']([^"\']+)["\']\s*(?:,\s*([^)]+))?\s*\)', source)
-
-    seen = set()
-    for key, default_str in get_calls:
-        if key in seen:
-            continue
-        seen.add(key)
-        default_str = default_str.strip() if default_str else ""
-        if default_str:
-            # Try to infer type from default value string
-            try:
-                default_val = eval(default_str, {"__builtins__": {}}, {})
-                ptype = _infer_type_from_default(default_val)
-                # Empty defaults ("", 0, []) still mean the param is required
-                is_empty_default = (
-                    default_val == "" or default_val == 0 or
-                    default_val == [] or default_val == {} or
-                    default_val is None
-                )
-                if is_empty_default:
-                    required.append(key)
-            except Exception:
-                ptype = _infer_type_from_name(key)
-        else:
-            ptype = _infer_type_from_name(key)
-            required.append(key)
-
-        properties[key] = {
-            "type": ptype,
-            "description": key.replace("_", " ").capitalize(),
-        }
-
-    # Fallback: if no .get() calls found, use signature of the module docstring
-    if not properties:
-        # Default generic schema
-        properties = {
-            "path": {"type": "string", "description": "File path"},
-            "content": {"type": "string", "description": "File content"},
-        }
-
-    result = {"type": "object", "properties": properties}
-    if required:
-        result["required"] = list(dict.fromkeys(required))  # unique, preserve order
-    return result
-
-
-
-def _patch_tool_schema() -> dict:
-    """Hand-crafted schema for patch tool — simpler without create mode."""
-    return {
-        "type": "function",
-        "function": {
-            "name": "patch",
-            "description": (
-                "Edit existing files. "
-                "mode='replace': find old_string and replace with new_string in a file. Requires path, old_string, new_string. "
-                "mode='patch': V4A multi-file batch edit. Requires patch (multi-file patch text). "
-                "To CREATE a new file, use the terminal tool: terminal(command='cat > path/file.md << '\''EOF'\''\\ncontent\\nEOF')"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "mode": {
-                        "type": "string",
-                        "enum": ["replace", "patch", "verified"],
-                        "description": "replace (edit a file) or patch (V4A multi-file batch) or verified (safe anchored edit)"
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "File path relative to workspace. Required for replace mode."
-                    },
-                    "old_string": {
-                        "type": "string",
-                        "description": "Text to find. Required for replace mode."
-                    },
-                    "new_string": {
-                        "type": "string",
-                        "description": "Replacement text. Required for replace mode."
-                    },
-                    "patch": {
-                        "type": "string",
-                        "description": "V4A patch content. Required for patch/verified mode."
-                    },
-                    "replace_all": {
-                        "type": "boolean",
-                        "description": "Replace all occurrences. Default: false."
-                    }
-                },
-                "required": ["mode"]
-            }
-        }
-    }
-
-def build_tool_schema(tool_id: str, tool_info: dict) -> dict:
-    """Build a single OpenAI-compatible tool schema entry."""
-    run_fn = tool_info["run_fn"]
-    doc = tool_info["doc"]
-
-    if tool_id == "patch":
-        return _patch_tool_schema()
-
-    parameters = _generate_parameter_schema(run_fn)
-
-    # Build description: module docstring + parameter hints
-    description_parts = [doc] if doc else [f"Tool: {tool_id}"]
-    props = parameters.get("properties", {})
-    if props:
-        param_desc = "; ".join(
-            f"{k}: {v.get('description', k)} ({v.get('type', 'string')})"
-            for k, v in props.items()
-        )
-        if param_desc:
-            description_parts.append(f"Parameters: {param_desc}")
-
-    return {
-        "type": "function",
-        "function": {
-            "name": tool_id,
-            "description": " | ".join(description_parts),
-            "parameters": parameters,
-        },
-    }
-
-
-# ── Agent tool resolution ──────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════
+#  Agent tool resolution
+# ═══════════════════════════════════════════════════════════════════════
 
 def _load_agent_meta(agent_id: str) -> dict:
-    """Load an agent's meta.yaml."""
     import yaml
     meta = AGENTS_DIR / agent_id / "meta.yaml"
     if not meta.exists():
@@ -295,50 +449,65 @@ def _load_agent_meta(agent_id: str) -> dict:
 
 
 def get_agent_tools_schemas(agent_id: str) -> list[dict]:
-    """Get OpenAI tool schemas for all tools available to an agent.
-
-    Uses the trait system: resolves tools from agent's declared traits
-    + per-agent overrides, then generates OpenAI schemas.
-    Falls back to legacy tools_allowed for backward compatibility.
-    """
     from trait_loader import resolve_agent_tools
-
     meta = _load_agent_meta(agent_id)
-
-    # Use trait system; fall back to legacy tools_allowed
     if meta.get("traits"):
         allowed = resolve_agent_tools(meta)
     else:
         allowed = meta.get("tools_allowed", [])
-
     allowed_set = set(allowed)
     all_tools = discover_all_tools()
-
     schemas = []
-
-    # Universal tools that exist in the tools/ directory
+    # Universal tools — send schema even without a tool module directory
     for uid in sorted(UNIVERSAL_TOOLS):
-        if uid in all_tools:
+        if uid in _UNIVERSAL_TOOL_SCHEMAS:
+            schemas.append({"type": "function", "function": _UNIVERSAL_TOOL_SCHEMAS[uid]})
+        elif uid in all_tools:
             schemas.append(build_tool_schema(uid, all_tools[uid]))
-
-    # Allowed tools (from traits + per-agent overrides)
     for tool_id in sorted(allowed_set):
         if tool_id in all_tools:
             schemas.append(build_tool_schema(tool_id, all_tools[tool_id]))
-
     return schemas
 
 
+# ═══════════════════════════════════════════════════════════════════════
+#  Unified tool dispatch with result truncation + error sanitization
+# ═══════════════════════════════════════════════════════════════════════
+
+def _truncate_str(text: str, max_chars: int) -> str:
+    """Truncate *text* to *max_chars* chars, breaking at the last newline."""
+    if len(text) <= max_chars:
+        return text
+    truncated = text[:max_chars]
+    last_nl = truncated.rfind("\n")
+    if last_nl > max_chars // 2:
+        truncated = truncated[:last_nl]
+    return truncated + f"\n... [truncated from {len(text):,} chars]"
+
+
+def _sanitize_error(exc: Exception) -> str:
+    """Return a safe error string, stripping sensitive paths."""
+    msg = f"{type(exc).__name__}: {exc}"
+    # Strip home directory paths
+    home = str(Path.home())
+    msg = msg.replace(home, "~")
+    return msg[:500]
+
+
 def execute_tool(tool_id: str, args: dict, agent_id: str = "") -> dict:
-    """Execute a tool by ID. Loads tools/<id>/__init__.py dynamically."""
+    """Execute a tool with unified error handling and result truncation.
+
+    Returns a sanitized dict with shape ``{"ok": bool, "tool": str, ...}``.
+    Top-level exceptions are caught and returned as error dicts — the caller
+    never receives an unhandled traceback.
+    """
     import importlib.util
-    from pathlib import Path
 
     tools_dir = Path(__file__).resolve().parent / "tools"
     mod_path = tools_dir / tool_id / "__init__.py"
 
     if not mod_path.exists():
-        return {"ok": False, "error": f"Tool '{tool_id}' not found", "tool": tool_id}
+        return {"ok": False, "error": f"Unknown tool: {tool_id}", "tool": tool_id}
 
     try:
         spec = importlib.util.spec_from_file_location(f"tools_{tool_id}", str(mod_path))
@@ -347,47 +516,52 @@ def execute_tool(tool_id: str, args: dict, agent_id: str = "") -> dict:
         run_fn = getattr(mod, "run", None)
         if run_fn is None:
             return {"ok": False, "error": f"Tool '{tool_id}' has no run()", "tool": tool_id}
+
         result = run_fn(args)
+
+        # Normalize: ensure result is a dict with standard keys
         if not isinstance(result, dict):
             result = {"ok": True, "output": str(result)}
+        result.setdefault("ok", True)
         result["tool"] = tool_id
+
+        # ── Result truncation ──────────────────────────────────────────
+        max_chars = _TOOL_MAX_RESULT_CHARS.get(tool_id, _DEFAULT_MAX_RESULT_CHARS)
+        for key in ("output", "content", "stdout", "stderr", "results"):
+            if key in result and isinstance(result[key], str):
+                original_len = len(result[key])
+                result[key] = _truncate_str(result[key], max_chars)
+                if len(result[key]) < original_len:
+                    result["_truncated"] = True
+                break
+
         return result
-    except Exception as e:
-        return {"ok": False, "error": str(e), "tool": tool_id}
+
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": _sanitize_error(exc),
+            "tool": tool_id,
+        }
 
 
 def format_tool_results_for_llm(tool_id: str, result: dict) -> str:
-    """Format tool execution result for LLM consumption."""
+    """Format a tool result for LLM consumption, with truncation."""
     ok = result.get("ok", False)
     error = result.get("error", "")
     if not ok:
         return f"[Tool {tool_id} failed: {error}]"
-    # Strip internal keys
-    display = {k: v for k, v in result.items() if k not in ("ok", "tool")}
-    return f"[Tool {tool_id} result: {json.dumps(display, ensure_ascii=False)[:2000]}]"
 
+    # Build display dict, stripping internal keys
+    skip_keys = {"ok", "tool", "_truncated"}
+    display = {k: v for k, v in result.items() if k not in skip_keys}
 
-# ── Decision tool — special, not in tools/ dir ─────────────────────────
+    # Truncate the formatted output
+    max_chars = _TOOL_MAX_RESULT_CHARS.get(tool_id, _DEFAULT_MAX_RESULT_CHARS)
+    formatted = json.dumps(display, ensure_ascii=False)
+    if len(formatted) > max_chars:
+        formatted = formatted[:max_chars] + "..."
+    if result.get("_truncated"):
+        formatted += " [output was truncated]"
 
-DECISION_TOOL_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "submit_decision",
-        "description": "Submit your final decision to advance the flow. Call this when you have completed your work and are ready to move to the next state.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "value": {
-                    "type": "string",
-                    "enum": ["APPROVE", "REQUEST_CHANGES", "BLOCKED"],
-                    "description": "APPROVE = work done, advance. REQUEST_CHANGES = need revision. BLOCKED = cannot continue.",
-                },
-                "reason": {
-                    "type": "string",
-                    "description": "Brief explanation of your decision (1-2 sentences in Chinese or English).",
-                },
-            },
-            "required": ["value", "reason"],
-        },
-    },
-}
+    return f"[Tool {tool_id} result: {formatted}]"

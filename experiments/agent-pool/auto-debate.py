@@ -360,6 +360,7 @@ def _build_multi_turn_system_prompt(
     output_artifacts: list[str],
     tool_schemas: list[dict],
     write_scope: list[str] = None,
+    flow_overview: str = "",
 ) -> str:
     """Build a task-oriented system prompt.
 
@@ -408,6 +409,8 @@ def _build_multi_turn_system_prompt(
     ]
     if output_artifacts:
         parts.append(f"你需要产出: {', '.join(output_artifacts)}")
+    if flow_overview:
+        parts.append(flow_overview)
     parts.append("")
 
     if write_scope:
@@ -457,6 +460,7 @@ def _run_agent_session(
     store=None,
     run_id: str = "",
     write_scope: list[str] = None,
+    flow_overview: str = "",
 ) -> dict:
     """Multi-turn agent session: think → tool → feedback → think → ... → decision.
 
@@ -473,6 +477,7 @@ def _run_agent_session(
     # Build system prompt
     system = _build_multi_turn_system_prompt(
         role_id, soul, goal, output_artifacts, tool_schemas, write_scope,
+        flow_overview=flow_overview,
     )
 
     # Build initial messages
@@ -520,15 +525,12 @@ def _run_agent_session(
     _empty_fails = 0
     _last_empty_tool = ""
 
-    # Inject turn info into the very first message so agent knows the limit
-    turn_info = f"\n(本轮可用 {max_turns} 次工具调用，已用 0 次)"
-    if messages:
-        messages[-1]["content"] += turn_info
-    else:
-        messages.append({
-            "role": "user",
-            "content": turn_info.strip(),
-        })
+    # Inject turn info + state context as separate messages.
+    # State context is appended to the end so the agent always sees it freshest.
+    state_context = f"[{state_id} 状态 · gate 第 {round_n} 轮]"
+    turn_info = f"(本轮可用 {max_turns} 次工具调用，已用 0 次)"
+    messages.append({"role": "user", "content": state_context})
+    messages.append({"role": "user", "content": turn_info})
 
     for turn in range(max_turns):
         # Print thinking indicator
@@ -611,8 +613,13 @@ def _run_agent_session(
                     _last_empty_tool = fn_name
                     continue
 
-                # Empty-arg detection: if fn_args is empty dict (not truncated, just empty)
-                if not fn_args:
+                # Empty-arg detection: if fn_args is empty AND the tool requires params
+                _tool_schema = next((f for f in tools if f.get("function", {}).get("name") == fn_name), None)
+                _has_required = bool(
+                    _tool_schema
+                    and _tool_schema.get("function", {}).get("parameters", {}).get("required")
+                )
+                if not fn_args and _has_required:
                     _required_params = json.dumps({
                         f["function"]["name"]: f["function"].get("parameters", {}).get("required", [])
                         for f in tools
@@ -645,17 +652,57 @@ def _run_agent_session(
                 if fn_name == "agent_message_send":
                     send_to = fn_args.get("recipients", fn_args.get("intended_recipients", []))
                     content = fn_args.get("content", "")
-                    if send_to and content:
-                        print(f"     💬 → {send_to[0]}: {content[:60]}...")
-                        tools_runner_dir = Path(__file__).resolve().parent
-                        run_id = goal
+                    if not send_to or not content:
+                        result = {"ok": False, "error": "agent_message_send: need recipients and content"}
+                    elif not isinstance(send_to, list):
+                        send_to = [send_to]
+                        result = {"ok": False, "error": "recipients must be a list"}
+                    else:
+                        from uuid import uuid4
+                        from datetime import datetime, timezone
+                        msg_id = uuid4().hex[:12]
+                        now = datetime.now(timezone.utc).isoformat()
+                        if store is not None:
+                            conn = store.connect()
+                            conn.execute(
+                                "INSERT INTO messages(message_id,run_id,state_id,from_role,intended_recipients,authorized_recipients,recipient_availability,visibility,kind,content,delivery_outcome,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                                (msg_id, run_id, state_id, role_id, json.dumps(send_to), json.dumps(send_to), json.dumps({r: True for r in send_to}), "targeted", "question", content, "delivered", now),
+                            )
+                            for r in send_to:
+                                conn.execute(
+                                    "INSERT INTO inboxes(run_id,role_id,state_id,message_id,read_status) VALUES(?,?,?,?,?)",
+                                    (run_id, r, state_id, msg_id, "unread"),
+                                )
+                            conn.commit()
+                        result = {"ok": True, "sent_to": send_to, "preview": content[:200]}
+                        print(f"     💬 → {', '.join(send_to)}: {content[:60]}...")
+                    tool_calls_made += 1
+                    _empty_fails = 0
+                elif fn_name == "agent_inbox_read":
+                    # Read inbox from DB — already loaded as inbox_rows
+                    if inbox:
+                        inbox_preview = "\n".join(
+                            f"  from {r.get('from_role', '?')}: {str(r.get('content', ''))[:120]}"
+                            for r in inbox[-5:]
+                        )
+                        result = {"ok": True, "messages": len(inbox), "preview": inbox_preview}
+                    else:
+                        result = {"ok": True, "messages": 0, "preview": "(收件箱为空)"}
+                    tool_calls_made += 1
+                    _empty_fails = 0
+                elif fn_name in ("memory_read", "memory_write", "skill_create", "skill_update",
+                                 "agent_submit_decision", "agent_summarize", "human_clarifier"):
+                    # Stub for universal tools that don't have modules yet
+                    result = {"ok": True, "note": f"{fn_name} is available but not yet implemented"}
+                    tool_calls_made += 1
                 else:
                     print(f"     🔧 {fn_name}({json.dumps(fn_args, ensure_ascii=False)[:80]})", end="")
+                    result = execute_tool(fn_name, fn_args, role_id)
+                    tool_calls_made += 1
+                    ok = result.get("ok", False)
+                    print(f" {'✅' if ok else '❌'}")
 
-                result = execute_tool(fn_name, fn_args, role_id)
-                tool_calls_made += 1
-                ok = result.get("ok", False)
-                print(f" {'✅' if ok else '❌'}")
+                ok = result.get("ok", False)  # Normalize for empty-arg detection below
 
                 # Persist thinking event
                 if store is not None:
@@ -701,7 +748,7 @@ def _run_agent_session(
                 messages.append(m)
             messages.append({
                 "role": "user",
-                "content": f"(剩余 {max_turns - tool_calls_made}/{max_turns} 次工具调用)",
+                "content": f"{state_context} (剩余 {max_turns - tool_calls_made}/{max_turns} 次工具调用)",
             })
         elif text_content:
             print(f" {dt:.1f}s → text response ({len(text_content)} chars)")
@@ -891,6 +938,44 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
     set_tracer(SqliteTracer(store, run_id=run_id))
     conn = store.connect()
 
+    # ── Load flow topology for overview ───────────────────────────────
+    _all_states = conn.execute(
+        "SELECT state_id, state_json FROM states WHERE run_id=? ORDER BY rowid",
+        (run_id,),
+    ).fetchall()
+    _state_map: dict[str, dict] = {}
+    _state_order: list[str] = []
+    for _s in _all_states:
+        _sj = json.loads(_s["state_json"]) if _s["state_json"] else {}
+        _state_map[_s["state_id"]] = _sj
+        if not _sj.get("terminal"):
+            _state_order.append(_s["state_id"])
+
+    def _build_flow_overview(current_state: str) -> str:
+        """Build a flow topology snapshot (round-invariant for cache)."""
+        lines = ["## 流程全景", ""]
+        _past = set()
+        # Determine completed states from decisions
+        for _d in conn.execute(
+            "SELECT state_id, value FROM decisions WHERE value='APPROVE'"
+        ).fetchall():
+            _past.add(_d["state_id"])
+        for _sid in _state_order:
+            _sj = _state_map.get(_sid, {})
+            _out = ", ".join(_sj.get("output_artifacts", [])) or "—"
+            _gate = _sj.get("gate", {})
+            _actors = _gate.get("required_roles", [])
+            _actor_str = " + ".join(_actors)
+            if _sid == current_state:
+                _marker = "🔄 当前"
+            elif _sid in _past:
+                _marker = "✅ 已完成"
+            else:
+                _marker = "⬜ 待执行"
+            lines.append(f"  {_marker}")
+            lines.append(f"  └─ {_sid} — {_actor_str} → 产出: {_out}")
+        return "\n".join(lines)
+
     # Track artifacts found across states for passing to next agent
     found_artifacts: dict[str, str] = {}
 
@@ -943,7 +1028,7 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
             eng_advance(run_id, state_id, exhausted, f"round_exhausted({cur_round})", cur_round, store)
             continue
 
-        for role_id in required_roles:
+        for role_idx, role_id in enumerate(required_roles):
             # ── Multi-turn agent session ────────────────────────────
             info = agents.get(role_id, {})
             soul = info.get("soul", "")
@@ -958,7 +1043,7 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
             # Get tool schemas auto-generated from meta.yaml + tools/<id>/
             from tool_registry import get_agent_tools_schemas
             tool_schemas = get_agent_tools_schemas(role_id)
-            print(f"  🤖 {role_id} ({len(tool_schemas)} tools)")
+            print(f"  🤖 {role_id} ({len(tool_schemas)} tools)" + (" [审查者]" if role_idx > 0 else ""))
 
             # Set write/read scope env vars from agent_specs
             _spec = _agent_specs.get(role_id, {})
@@ -970,6 +1055,22 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
             for _d in _write_scope:
                 Path(PROJECT_ROOT, _d).mkdir(parents=True, exist_ok=True)
 
+            # For multi-actor gates, the first agent produces the artifact;
+            # subsequent agents (reviewers) check it rather than re-producing it.
+            _state_artifacts = state_dict.get("output_artifacts", [])
+            is_reviewer = role_idx > 0 and len(required_roles) > 1
+            if is_reviewer:
+                # Reviewer prompt: read the artifact, check quality, decide
+                _review_target = ", ".join(_state_artifacts) if _state_artifacts else "the output"
+                soul = (
+                    f"## 本阶段你的角色：审查者\n"
+                    f"当前状态的产物（{_review_target}）已由 {required_roles[0]} 生成。"
+                    f"你的任务是：读取产物文件，检查质量是否满足目标要求。"
+                    f"如果合格 → 提交 APPROVE。如果发现问题 → 提交 REQUEST_CHANGES 并说明原因。"
+                    f"你不需要重新生成产物，只做审查。\n\n"
+                    f"{soul}"
+                )
+
             # Run multi-turn session: think → tool → feedback → think → ... → decision
             result = _run_agent_session(
                 role_id, soul, goal, state_id, cur_round,
@@ -979,6 +1080,7 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
                 store=store,
                 run_id=run_id,
                 write_scope=_write_scope,
+                flow_overview=_build_flow_overview(state_id),
             )
 
             val = result.get("value", "APPROVE").upper()
