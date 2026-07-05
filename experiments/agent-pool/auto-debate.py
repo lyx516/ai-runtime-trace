@@ -1574,28 +1574,44 @@ def manager_evaluate(run_id: str, goal: str, agent_ids: list[str],
         )
 
     # ---- Per-agent evidence from SQLite ----
+    # Load state topology to determine gate requirements
+    _states_rows = conn.execute(
+        "SELECT state_id, state_json FROM states WHERE run_id=? ORDER BY rowid", (run_id,),
+    ).fetchall()
+    _gate_roles: dict[str, set] = {}  # agent -> set of states where it's gate-required
+    for _s in _states_rows:
+        _sj = json.loads(_s["state_json"]) if _s["state_json"] else {}
+        _gate = _sj.get("gate") or {}
+        for _r in _gate.get("required_roles", []):
+            _gate_roles.setdefault(_r, set()).add(_s["state_id"])
+
     evidence_per_agent = {}
     for aid in agent_ids:
         parts = []
+        # Gate role annotation — distinguishes "idle reviewer" from "wasted agent"
+        _gate_states = _gate_roles.get(aid, set())
+        if _gate_states:
+            parts.append(f"gate_required_in: {', '.join(sorted(_gate_states))}")
+        else:
+            parts.append("gate_required_in: (none — not a gate requirement)")
+        # Tool stats
+        _total_tools = conn.execute(
+            "SELECT COUNT(*) as c FROM thinking_events WHERE run_id=? AND role_id=?", (run_id, aid),
+        ).fetchone()
+        parts.append(f"tool_calls: {_total_tools['c']}")
         _tool_fails = conn.execute(
-            "SELECT step_type, COUNT(*) as c FROM thinking_events WHERE run_id=? AND role_id=? AND output_json NOT LIKE '%ok%true%' AND output_json NOT LIKE '%true%' GROUP BY step_type",
+            "SELECT step_type, COUNT(*) as c FROM thinking_events WHERE run_id=? AND role_id=? AND output_json NOT LIKE '%ok%true%' GROUP BY step_type",
             (run_id, aid),
         ).fetchall()
         if _tool_fails:
             fails_str = ", ".join(f"{r['step_type']}x{r['c']}" for r in _tool_fails)
             parts.append(f"tool_failures: {fails_str}")
-        _retries = conn.execute(
-            "SELECT from_state_id, COUNT(*) as c FROM transitions WHERE run_id=? GROUP BY from_state_id HAVING c > 1",
-            (run_id,),
-        ).fetchall()
-        if _retries:
-            retry_str = ", ".join(f"{r['from_state_id']}x{r['c']}" for r in _retries)
-            parts.append(f"state_retries: {retry_str}")
+        # Decisions
         _decs = conn.execute(
             "SELECT COUNT(*) as c FROM decisions WHERE run_id=? AND role_id=?", (run_id, aid),
         ).fetchone()
         parts.append(f"decisions: {_decs['c']}")
-        evidence_per_agent[aid] = "; ".join(parts) if parts else "no issues detected"
+        evidence_per_agent[aid] = "; ".join(parts)
 
     evidence_text = "\n".join(f"  {aid}: {evidence_per_agent.get(aid, '')}" for aid in agent_ids)
 
@@ -1614,7 +1630,10 @@ def manager_evaluate(run_id: str, goal: str, agent_ids: list[str],
 评审要求 -- **必须基于证据，禁止空谈**：
 1. 每个 agent：指出具体问题（带数据）和改进类别（memory/skill/tool/new_agent）
 2. 自己（manager）：评审选队策略是否合理
-3. 改进建议必须有的放矢，例如 "file_write 成功率 0%，需要在 skill 中加 .md 后缀示例"
+3. **区分 gate 审查者与浪费 agent**：
+   - gate_required_in 有的 agent 即使 tool_calls=0，也可能是等待上游产物的审查者（保留）
+   - gate_required_in=(none) 且 tool_calls=0 的 agent 才是真正的浪费（应移除）
+4. 改进建议必须有的放矢，例如 "file_write 成功率 0%，需要在 skill 中加 .md 后缀示例"
 
 响应 JSON:
 {{{{"feedback": [{{{{"agent_id": "xxx", "category": "skill", "suggestion": "具体改进建议（含数据）", "evidence": "数据支撑"}}}}]}},
