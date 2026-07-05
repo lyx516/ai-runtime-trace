@@ -28,7 +28,6 @@ UNIVERSAL_TOOLS = {
     "skill_create",
     "skill_update",
     "agent_message_send",
-    "agent_inbox_read",
     "agent_submit_decision",
     "agent_summarize",
     "human_clarifier",
@@ -294,11 +293,6 @@ _UNIVERSAL_TOOL_SCHEMAS: dict[str, dict] = {
             },
             "required": ["recipients", "content"],
         },
-    },
-    "agent_inbox_read": {
-        "name": "agent_inbox_read",
-        "description": "Read messages sent to you by other agents.",
-        "parameters": {"type": "object", "properties": {}},
     },
 }
 
