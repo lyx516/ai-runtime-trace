@@ -219,20 +219,39 @@ def manager_select_agents(goal: str, agents: dict) -> tuple[list[str], list[dict
         )
     agent_list = "\n".join(agent_list_lines)
 
-    system = f"""你是流程管理专家。根据用户目标选择班底技能并选出合适的 Agent。{team_skills_text}
+    system = f"""你是流程管理专家。根据用户目标，选择合适的 Agent 并生成完整的 flow 拓扑。
+
+{team_skills_text}
 
 ## 响应格式
 
 严格 JSON，不要任何其他文本：
 
-```json
 {{
   "agents": ["id1", "id2", ...],
-  "team": "选择的班底文件名，如 spec-team.md，无匹配则返回 custom",
-  "reason": "选择理由（简述任务特点 → 班底匹配逻辑）"
+  "reason": "选择理由（简述任务特点 → 匹配逻辑）",
+  "flow": [
+    {{
+      "state": "SPEC",
+      "description": "编写规格文档",
+      "actors": "spec-writer",
+      "gate": {{"type": "product", "file": "spec.md", "pass": "PLAN", "fail": "SPEC", "max": 3}},
+      "output_artifacts": ["spec.md"]
+    }},
+    ...
+  ]
 }}
-```
-"""
+
+flow 字段说明：
+- actors: 用 "+" 连接多个 agent（如 "implementer+code-reviewer"），后者为审查者
+- gate.type: "product"（文件门禁）、"decision"（人工审核）
+- gate.file: product gate 要求的文件名
+- gate.pass/fail: 状态转换目标
+- gate.max: 最大轮次
+- output_artifacts: 本状态产出文件列表
+
+如果任务简单只需 1 个 agent，flow 可以只有 1 个 DONE 状态：
+[{{"state": "DONE", "description": "...", "actors": "writer", "gate": {{"type": "decision", "pass": "DONE", "fail": "ABORT", "max": 3}}}}]"""
 
     user = f"## 任务\n{goal}\n\n## Agent 池\n{agent_list}\n\n请选择班底和 Agent。"
     print("\n🤔 管理 Agent 正在分析任务...")
@@ -243,37 +262,23 @@ def manager_select_agents(goal: str, agents: dict) -> tuple[list[str], list[dict
 
     valid = [a for a in selected if a in agents and a != "manager"]
     if len(valid) < 1:
-        valid = ["designer", "critic", "mediator", "decider"]
-        team_file = "debate-team.md"
-        reason = "选择不足，使用默认辩论组合"
+        valid = ["writer"]
+        reason = "选择不足，使用默认 writer"
 
-    # Resolve flow topology from matched team skill
-    flow_topology = []
-    matched_skill = None
-    for s in team_skills:
-        if s["file"] == team_file:
-            matched_skill = s
-            flow_topology = list(s.get("flow", []))
-            break
-
-    # Store the matched skill's full frontmatter for later use
-    if matched_skill and flow_topology:
-        matched_info = matched_skill
-    else:
-        # No match: generate a simple single-agent topology
-        if len(valid) == 1:
-            flow_topology = [{
-                "state": "DONE",
-                "description": goal[:80],
-                "actors": valid[0],
-                "gate": {"type": "decision", "pass": "DONE", "fail": "ABORT", "max": 3},
-            }]
-        matched_info = matched_skill or {"output_base": ""}
-
+    # Use flow topology directly from LLM response
+    flow_topology = result.get("flow", [])
+    if not flow_topology:
+        # Minimal fallback
+        flow_topology = [{
+            "state": "DONE",
+            "description": goal[:80],
+            "actors": "+".join(valid) if len(valid) > 1 else valid[0],
+            "gate": {"type": "decision", "pass": "DONE", "fail": "ABORT", "max": 3},
+        }]
     print(f"  选择了: {', '.join(valid)}")
     print(f"  理由: {reason}" if reason else "")
-    print(f"  班底: {team_file}" if team_file else "")
-    return valid, flow_topology, (matched_info or {"output_base": ""}).get("output_base", "")
+    print(f"  流程: {' → '.join(s.get('state','?') for s in flow_topology)}")
+    return valid, flow_topology, ""
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -2402,30 +2407,13 @@ def main():
     agent_ids, flow_topology, output_base = manager_select_agents(goal, agents)
 
     if not flow_topology:
-        if len(agent_ids) == 1:
-            flow_topology = [{
-                "state": "DONE",
-                "description": goal[:80],
-                "actors": agent_ids[0],
-                "gate": {"type": "decision", "pass": "DONE", "fail": "ABORT", "max": 3},
-            }]
-            print(f"  💬 简单任务，单 agent 直接回答")
-        else:
-            # Fallback: generate a linear pipeline from selected agents
-            _spec_agents = [a for a in agent_ids if a in ("spec-writer","designer")]
-            _plan_agents = [a for a in agent_ids if a in ("plan-maker","analyst")]
-            _task_agents = [a for a in agent_ids if a in ("task-breaker",)]
-            _impl_agents = [a for a in agent_ids if a in ("implementer",)]
-            _review_agents = [a for a in agent_ids if a in ("code-reviewer","reviewer","critic","tester")]
-            _remaining = [a for a in agent_ids if a not in _spec_agents+_plan_agents+_task_agents+_impl_agents+_review_agents]
-            flow_topology = []
-            if _spec_agents: flow_topology.append({"state": "SPEC", "description": "编写规格文档", "actors": "+".join(_spec_agents), "gate": {"type": "product", "file": "spec.md", "pass": "PLAN" if _plan_agents else "TASKS" if _task_agents else "IMPLEMENT" if _impl_agents else "REVIEW", "fail": "SPEC", "max": 3}, "output_artifacts": ["spec.md"]})
-            if _plan_agents: flow_topology.append({"state": "PLAN", "description": "编写技术方案", "actors": "+".join(_plan_agents), "gate": {"type": "product", "file": "plan.md", "pass": "TASKS" if _task_agents else "IMPLEMENT" if _impl_agents else "REVIEW", "fail": "PLAN", "max": 3}, "output_artifacts": ["plan.md"]})
-            if _task_agents: flow_topology.append({"state": "TASKS", "description": "拆解任务", "actors": "+".join(_task_agents), "gate": {"type": "product", "file": "tasks.md", "pass": "IMPLEMENT" if _impl_agents else "REVIEW", "fail": "TASKS", "max": 3}, "output_artifacts": ["tasks.md"]})
-            if _impl_agents: flow_topology.append({"state": "IMPLEMENT", "description": "编写代码+测试", "actors": "+".join(_impl_agents), "gate": {"type": "product", "file": "implementation-report.md", "pass": "REVIEW", "fail": "IMPLEMENT", "max": 5}, "output_artifacts": ["implementation-report.md"]})
-            if _review_agents: flow_topology.append({"state": "REVIEW", "description": "代码审查", "actors": "+".join(_review_agents), "gate": {"type": "product", "file": "review.md", "pass": "DONE", "fail": "REVIEW", "max": 3}, "output_artifacts": ["review.md"]})
-            if _remaining: flow_topology.append({"state": "DONE", "description": "综合执行", "actors": "+".join(_remaining), "gate": {"type": "decision", "pass": "DONE", "fail": "ABORT", "max": 3}})
-            print(f"  🏗️ 自动生成 pipeline: {' → '.join(s['state'] for s in flow_topology)}")
+        flow_topology = [{
+            "state": "DONE",
+            "description": goal[:80],
+            "actors": "+".join(agent_ids) if len(agent_ids) > 1 else agent_ids[0],
+            "gate": {"type": "decision", "pass": "DONE", "fail": "ABORT", "max": 3},
+        }]
+        print(f"  ⚠️ Manager 未返回 flow，使用默认 DONE 拓扑")
 
     # Phase 2: Manager generates flow YAML + briefs agents
     print("\n📄 生成 Flow YAML...")
