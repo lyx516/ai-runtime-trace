@@ -12,21 +12,21 @@ description: Create or update the project constitution from interactive or provi
 ## Inputs
 
 - User-provided principles or amendments.
-- Existing `参考 constitution: constitution.md` and templates.
+- Existing `.specify/memory/constitution.md` and templates.
 
 If the request is missing or ambiguous, ask focused questions before proceeding.
 
 ## Workflow
 
-You are updating the project constitution at `参考 constitution: constitution.md`. This file is a TEMPLATE containing placeholder tokens in square brackets (e.g. `[PROJECT_NAME]`, `[PRINCIPLE_1_NAME]`). Your job is to (a) collect/derive concrete values, (b) fill the template precisely, and (c) propagate any amendments across dependent artifacts.
+You are updating the project constitution at `.specify/memory/constitution.md`. This file is a TEMPLATE containing placeholder tokens in square brackets (e.g. `[PROJECT_NAME]`, `[PRINCIPLE_1_NAME]`). Your job is to (a) collect/derive concrete values, (b) fill the template precisely, and (c) propagate any amendments across dependent artifacts.
 
-If `参考 constitution: constitution.md` is missing, do **not** edit upstream Spec Kit templates or a downloaded `spec-kit` source checkout as a substitute. Ask for the target project path or, when the user explicitly wants a new workspace, initialize one first with `specify init <name> --integration <agent> --ignore-agent-tools`, then operate on the new project's `参考 constitution: constitution.md`.
+If `.specify/memory/constitution.md` is missing, do **not** edit upstream Spec Kit templates or a downloaded `spec-kit` source checkout as a substitute. Ask for the target project path or, when the user explicitly wants a new workspace, initialize one first with `specify init <name> --integration <agent> --ignore-agent-tools`, then operate on the new project's `.specify/memory/constitution.md`.
 
 When the user provides compact governance preferences such as "简洁、高可复用性、易读、不做多余设计、宁缺毋滥", translate them into short, testable principles. Prefer fewer high-signal principles and concrete gates over broad aspirational wording.
 
 Follow this execution flow:
 
-1. Load the existing constitution template at `参考 constitution: constitution.md`.
+1. Load the existing constitution template at `.specify/memory/constitution.md`.
    - Identify every placeholder token of the form `[ALL_CAPS_IDENTIFIER]`.
      **IMPORTANT**: The user might require less or more principles than the ones used in the template. If a number is specified, respect that - follow the general template. You will update the doc accordingly.
 
@@ -47,9 +47,9 @@ Follow this execution flow:
    - Ensure Governance section lists amendment procedure, versioning policy, and compliance review expectations.
 
 4. Consistency propagation checklist (convert prior checklist into active validations):
-   - Read `参考 template: plan-template.md` and ensure any "Constitution Check" or rules align with updated principles.
-   - Read `参考 template: spec-template.md` for scope/requirements alignment—update if constitution adds/removes mandatory sections or constraints.
-   - Read `参考 template: tasks-template.md` and ensure task categorization reflects new or removed principle-driven task types (e.g., observability, versioning, testing discipline).
+   - Read `.specify/templates/plan-template.md` and ensure any "Constitution Check" or rules align with updated principles.
+   - Read `.specify/templates/spec-template.md` for scope/requirements alignment—update if constitution adds/removes mandatory sections or constraints.
+   - Read `.specify/templates/tasks-template.md` and ensure task categorization reflects new or removed principle-driven task types (e.g., observability, versioning, testing discipline).
    - Review runtime prompts/agents for outdated references and align with updated principles:
      - `.claude/commands/speckit.*.md`
      - `.codex/prompts/speckit.*.md`
@@ -74,7 +74,7 @@ Follow this execution flow:
    - Principles are declarative, testable, and free of vague language ("should" → replace with MUST/SHOULD rationale where appropriate).
    - If no canonical test/lint/build command exists, run a focused ad-hoc verification script from an OS-safe temporary path with a `hermes-verify-` filename prefix. Check the changed constitution/templates for required synced text, unresolved placeholders, date/version consistency, stale wording, and trailing whitespace; then clean up the temporary script and report it explicitly as ad-hoc verification, not suite green.
 
-7. Write the completed constitution back to `参考 constitution: constitution.md` (overwrite).
+7. Write the completed constitution back to `.specify/memory/constitution.md` (overwrite).
 
 8. Output a final summary to the user with:
    - New version and bump rationale.
@@ -92,11 +92,11 @@ If the user supplies partial updates (e.g., only one principle revision), still 
 
 If critical info missing (e.g., ratification date truly unknown), insert `TODO(<FIELD_NAME>): explanation` and include in the Sync Impact Report under deferred items.
 
-Do not create a new template; always operate on the existing `参考 constitution: constitution.md` file.
+Do not create a new template; always operate on the existing `.specify/memory/constitution.md` file.
 
 ## Outputs
 
-- Updated `参考 constitution: constitution.md` (with Sync Impact Report comment)
+- Updated `.specify/memory/constitution.md` (with Sync Impact Report comment)
 - Any updated templates or runtime guidance files required to stay consistent with the constitution
 
 ## Next Steps

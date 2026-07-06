@@ -18,7 +18,7 @@ description: Execute the implementation plan by processing and executing all tas
 If the spec is missing, ask the user to run speckit-specify first.
 
 **Setup pitfall**: If `setup-plan.sh` warns "Plan template not found", the project
-is missing `参考 template: `. See `references/template-setup-pitfall.md` for
+is missing `.specify/templates/`. See `references/template-setup-pitfall.md` for
 the one-command fix.
 
 **Python path pitfalls**: When implementing a Python project with `src/` package

@@ -52,7 +52,7 @@ Generate a technology-agnostic spec for existing code, then create the feature b
    - Read BRANCH_NAME, FEATURE_DIR, and SPEC_FILE paths from the script JSON output.
    - For single quotes in args like "I'm Groot", use escape syntax: e.g 'I'\''m Groot' (or double-quote if possible: "I'm Groot").
 
-6. **Load the spec template** from `参考 template: spec-template.md`.
+6. **Load the spec template** from `.specify/templates/spec-template.md`.
 
 7. **Draft the specification** using the template structure:
    - **User Stories**: Infer from user-facing code paths and interactions.
