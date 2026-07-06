@@ -223,6 +223,8 @@ def manager_select_agents(goal: str, agents: dict) -> tuple[list[str], list[dict
 
     system = f"""你是流程管理专家。根据用户目标，选择合适的 Agent 并生成完整的 flow 拓扑。
 
+**如果任务描述中明确指定了团队组成或流程结构（如"必须使用 X+Y+Z"、"流程为 A→B→C"），你必须严格遵循。**
+
 {team_skills_text}
 
 {team_docs_text}
