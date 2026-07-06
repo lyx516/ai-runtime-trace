@@ -2202,9 +2202,10 @@ def _evolve_agent(agent_id: str, apply: bool = False):
 1. 每条修改必须引用具体的 feedback 证据
 2. 最小改动——能不改就不改
 3. 如果 feedback 已过时或不适用，果断 dismiss
-4. 接近上限时，优先替换旧的 Evolution Update 而非追加
-5. 避免写入已在文件中存在的内容（去重）
-6. 响应 JSON: {{"actions": [{{"type": "update_memory|update_skill|add_tool|dismiss", "detail": "具体修改内容"}}]}}"""
+4. **detail 格式规则见你的 Memory.md** — 禁止元指令和证据
+
+响应 JSON:
+{{"actions": [{{"type": "update_memory|update_skill|add_tool|dismiss", "detail": "具体修改内容"}}]}}"""
 
     user = f"""## Agent: {agent_id}
 
@@ -2262,9 +2263,24 @@ def _evolve_agent(agent_id: str, apply: bool = False):
                         print(f"  ⏭  Skipped {target_file.name} (content already exists)")
                         continue
 
-                # Hard limit check
+                # Hard limit — report back to EvolutionAgent for self-correction
                 if current_size + len(new_content) > max_bytes:
-                    print(f"  ⚠️  {target_file.name} at {current_size}B/{max_bytes}B — cannot append. Trim old Evolution Updates manually.")
+                    _err = f"❌ {target_file.name} 超限 ({current_size}B/{max_bytes}B)。当前内容:\n{existing[:2000]}"
+                    print(f"  ⚠️  {target_file.name} 超限，要求 EvolutionAgent 重新生成...")
+                    _retry_result = call_llm(
+                        system, f"{user}\n\n{_err}\n\n请精简或替换旧内容，重新生成 detail（需 < {max_bytes - current_size}B）。",
+                        temperature=0.3, max_tokens=2000)
+                    _retry_actions = _retry_result.get("actions", [])
+                    if _retry_actions:
+                        detail = _retry_actions[0].get("detail", "")
+                        new_content = f"\n{detail}\n"
+                        if current_size + len(new_content) <= max_bytes:
+                            with open(target_file, "a") as f:
+                                f.write(new_content)
+                            applied += 1
+                            print(f"  ✅ Updated {target_file.name} (retry, {current_size}B → {current_size + len(new_content)}B)")
+                        else:
+                            print(f"  ⚠️  Retry still over limit, skipped")
                     continue
 
                 with open(target_file, "a") as f:
