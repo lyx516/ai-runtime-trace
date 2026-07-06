@@ -465,19 +465,29 @@ def _build_multi_turn_system_prompt(
         tool_descriptions.append(f"  {fn['name']}: {fn.get('description', '')[:100]}")
     tool_text = "\n".join(tool_descriptions) if tool_descriptions else "  (无)"
 
-    # Read assigned skill content, if any
+    # Read assigned skill content — all .md files in the skill directory
     skill_content = ""
-    _skill_path = Path(__file__).resolve().parent / "shared" / "skills" / role_id / "SKILL.md"
-    if _skill_path.exists():
-        with open(_skill_path, encoding="utf-8") as _f:
+    _skill_dir = Path(__file__).resolve().parent / "shared" / "skills" / role_id
+    if _skill_dir.is_dir():
+        _skill_parts = []
+        for _sf in sorted(_skill_dir.glob("*.md")):
+            with open(_sf, encoding="utf-8") as _f:
+                _raw = _f.read()
+            if _raw.startswith("---"):
+                _parts = _raw.split("---", 2)
+                _body = _parts[2].strip() if len(_parts) >= 3 else _raw
+            else:
+                _body = _raw
+            _skill_parts.append(f"## {_sf.stem}\n{_body}")
+        if _skill_parts:
+            skill_content = "\n\n".join(_skill_parts)
+    elif _skill_dir.with_suffix(".md").exists():
+        # Legacy: single SKILL.md file
+        with open(_skill_dir.with_suffix(".md"), encoding="utf-8") as _f:
             _raw = _f.read()
-        # Strip YAML frontmatter
         if _raw.startswith("---"):
             _parts = _raw.split("---", 2)
-            if len(_parts) >= 3:
-                skill_content = _parts[2].strip()
-            else:
-                skill_content = _raw
+            skill_content = _parts[2].strip() if len(_parts) >= 3 else _raw
         else:
             skill_content = _raw
 
