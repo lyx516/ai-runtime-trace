@@ -169,7 +169,6 @@ def manager_select_agents(goal: str, agents: dict) -> tuple[list[str], list[dict
     frontmatter), or a generated topology when no team skill is picked.
     output_base is the matched skill's output template (e.g. "output/{flow_id}").
     """
-    import re
     team_skills = _load_team_skills()
 
     # Build team skill listing for the LLM prompt — include full doc_body as reference
@@ -268,43 +267,29 @@ flow 字段说明：
     reason = result.get("reason", "")
 
     valid = [a for a in selected if a in agents and a != "manager"]
-    if len(valid) < 1:
-        # Check if task requires specific agents
-        _explicit = re.findall(r'必须使用\s*([\w\s,\-+]+?)(?:三人组|四人组|五人组|团队|，)', goal)
-        if _explicit:
-            _explicit_agents = [a.strip() for a in re.split(r'[,、\s+]+', _explicit[0]) if a.strip()]
-            valid = [a for a in _explicit_agents if a in agents]
-            if valid:
-                reason = f"遵循任务指示：{', '.join(valid)}"
-    if len(valid) < 1:
-        valid = ["writer"]
-        reason = "选择不足，使用默认 writer"
-
-    # Use flow topology directly from LLM response
     flow_topology = result.get("flow", [])
-    if not flow_topology and len(valid) > 1:
-        # Check if task specifies flow structure
-        _flow_match = re.search(r'流程为\s*([\w→\->\s]+)', goal)
-        if _flow_match:
-            _states = [s.strip() for s in re.split(r'[→\->]+', _flow_match.group(1)) if s.strip()]
-            flow_topology = []
-            for i, st in enumerate(_states):
-                _next = _states[i+1] if i+1 < len(_states) else "DONE"
-                _actors = valid[min(i, len(valid)-1)]  # cycle through agents
-                flow_topology.append({
-                    "state": st, "description": f"{st} 阶段",
-                    "actors": _actors,
-                    "gate": {"type": "product", "file": f"{st.lower()}.md", "pass": _next, "fail": st, "max": 3},
-                    "output_artifacts": [f"{st.lower()}.md"],
-                })
-            print(f"  🎯 遵循任务流程指示: {' → '.join(_states)}")
-    if not flow_topology:
-        flow_topology = [{
-            "state": "DONE",
-            "description": goal[:80],
-            "actors": "+".join(valid) if len(valid) > 1 else valid[0],
-            "gate": {"type": "decision", "pass": "DONE", "fail": "ABORT", "max": 3},
-        }]
+
+    if len(valid) < 1 or not flow_topology:
+        # Report error back to manager for self-correction
+        _err_parts = []
+        if len(valid) < 1:
+            _err_parts.append(f"agents 为空或所选 agent 不存在（selected={selected}）")
+        if not flow_topology:
+            _err_parts.append("flow 为空")
+        _err_msg = "；".join(_err_parts)
+        print(f"  ⚠️ Manager 响应无效: {_err_msg}")
+        print(f"  🔄 要求 Manager 重新生成...")
+
+        _retry_user = f"{user}\n\n## ❌ 上次响应错误\n{_err_msg}\n请修正后重新返回完整的 JSON，包含 agents 和 flow 字段。"
+        result = call_llm(system, _retry_user, temperature=0.3)
+
+    # Final fallback — only after retry also fails
+    valid = [a for a in result.get("agents", []) if a in agents and a != "manager"]
+    flow_topology = result.get("flow", []) or flow_topology
+
+    if len(valid) < 1:
+        print("  ❌ Manager 连续响应无效，中止")
+        sys.exit(1)
     print(f"  选择了: {', '.join(valid)}")
     print(f"  理由: {reason}" if reason else "")
     print(f"  流程: {' → '.join(s.get('state','?') for s in flow_topology)}")
@@ -2455,13 +2440,8 @@ def main():
     agent_ids, flow_topology, output_base = manager_select_agents(goal, agents)
 
     if not flow_topology:
-        flow_topology = [{
-            "state": "DONE",
-            "description": goal[:80],
-            "actors": "+".join(agent_ids) if len(agent_ids) > 1 else agent_ids[0],
-            "gate": {"type": "decision", "pass": "DONE", "fail": "ABORT", "max": 3},
-        }]
-        print(f"  ⚠️ Manager 未返回 flow，使用默认 DONE 拓扑")
+        print("  ❌ Manager 未返回 flow 拓扑，中止")
+        sys.exit(1)
 
     # Phase 2: Manager generates flow YAML + briefs agents
     print("\n📄 生成 Flow YAML...")
