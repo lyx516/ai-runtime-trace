@@ -440,6 +440,7 @@ def _build_multi_turn_system_prompt(
     tool_schemas: list[dict],
     write_scope: list[str] = None,
     flow_overview: str = "",
+    team_lineup: str = "",
 ) -> str:
     """Build a task-oriented system prompt.
 
@@ -486,6 +487,8 @@ def _build_multi_turn_system_prompt(
         f"## 团队总目标",
         f"{goal}",
     ]
+    if team_lineup:
+        parts.append(f"\n## 团队阵容\n{team_lineup}")
     if flow_overview:
         parts.append(flow_overview)
     parts.append("")
@@ -543,9 +546,21 @@ def _init_agent_session_state(
     from tool_registry import DECISION_TOOL_SCHEMA
 
     # 1. Build system prompt (same as original init phase)
+    # Build team lineup from agents dict
+    import re
+    _lineup_parts = []
+    for aid, ainfo in sorted(agents.items()):
+        if aid == "manager":
+            continue
+        _role = ainfo.get("role", "") or ainfo.get("display_name", aid)
+        _mark = "👤 你" if aid == role_id else "   "
+        _desc = ainfo.get("description", "")[:60]
+        _lineup_parts.append(f"  {_mark} {aid} ({_role}) — {_desc}")
+    team_lineup = "\n".join(_lineup_parts) if len(agents) > 1 else ""
     system = _build_multi_turn_system_prompt(
         role_id, soul, goal, output_artifacts, tool_schemas, write_scope,
         flow_overview=flow_overview,
+        team_lineup=team_lineup,
     )
 
     # 2. Build initial messages
