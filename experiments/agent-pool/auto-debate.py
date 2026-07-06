@@ -1251,6 +1251,9 @@ def _run_fsm_loop(store, run_id: str, goal: str, agent_ids: list[str], agents: d
 
             from tool_registry import get_agent_tools_schemas
             tool_schemas = get_agent_tools_schemas(role_id)
+            # Single-agent mode: no one to send messages to - remove message tool
+            if len(agents) == 1:
+                tool_schemas = [t for t in tool_schemas if t.get("function", {}).get("name") != "agent_message_send"]
             print(f"  🤖 {role_id} ({len(tool_schemas)} tools)" + (" [审查者]" if role_idx > 0 else ""))
 
             _spec = _agent_specs.get(role_id, {})
