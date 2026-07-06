@@ -261,7 +261,7 @@ flow 字段说明：
 
     user = f"## 任务\n{goal}\n\n## Agent 池\n{agent_list}\n\n请选择班底和 Agent。"
     print("\n🤔 管理 Agent 正在分析任务...")
-    result = call_llm(system, user, temperature=0.3)
+    result = call_llm(system, user, temperature=0.3, max_tokens=4000)
     selected = result.get("agents", [])
     team_file = result.get("team", "")
     reason = result.get("reason", "")
@@ -281,7 +281,7 @@ flow 字段说明：
         print(f"  🔄 要求 Manager 重新生成...")
 
         _retry_user = f"{user}\n\n## ❌ 上次响应错误\n{_err_msg}\n请修正后重新返回完整的 JSON，包含 agents 和 flow 字段。"
-        result = call_llm(system, _retry_user, temperature=0.3)
+        result = call_llm(system, _retry_user, temperature=0.3, max_tokens=4000)
 
     # Final fallback — only after retry also fails
     valid = [a for a in result.get("agents", []) if a in agents and a != "manager"]
