@@ -1,8 +1,4 @@
 
-
-## Evolution Update
-在 SKILL.md 末尾追加文件操作示例：
-
 ## 文件操作示例
 - 读取文件前，先使用 `os.path.exists()` 或类似方法检查文件是否存在，若不存在则使用默认内容替代。
 - 写入文件时，确保目录存在（如使用 `os.makedirs(os.path.dirname(path), exist_ok=True)`），并使用完整路径避免歧义。
@@ -21,12 +17,6 @@ def safe_write(path, content):
     with open(path, 'w') as f:
         f.write(content)
 ```
-
-
-
-## Evolution Update
-在 SKILL.md 的文件操作相关部分增加以下内容：
-
 ## 文件操作注意事项
 - 使用 `file_read` 前，务必先检查文件是否存在；若不存在，则使用默认内容或创建文件。
 - 使用 `file_write` 时，确保目标目录存在，并始终使用完整绝对路径。
