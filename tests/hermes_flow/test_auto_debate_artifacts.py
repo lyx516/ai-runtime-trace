@@ -26,16 +26,17 @@ def test_find_output_artifact_ignores_stale_other_flow(tmp_path):
     assert reason == "missing in current write scope"
 
 
-def test_find_output_artifact_rejects_one_line_stub(tmp_path):
+def test_find_output_artifact_rejects_empty_file(tmp_path):
+    """H4: artifacts.py only rejects empty files; quality assessment is delegated to reviewer agents."""
     mod = _load_auto_debate()
     current = tmp_path / "output" / "auto-current"
     current.mkdir(parents=True)
-    (current / "tasks.md").write_text("# Tasks for Vector Database System", encoding="utf-8")
+    (current / "tasks.md").write_text("", encoding="utf-8")  # empty file
 
     artifact, reason = mod._find_output_artifact(str(tmp_path), "tasks.md", ["output/auto-current/"])
 
     assert artifact is None
-    assert "stub-like" in reason
+    assert "empty" in reason
 
 
 def test_find_output_artifact_accepts_current_substantive_file(tmp_path):

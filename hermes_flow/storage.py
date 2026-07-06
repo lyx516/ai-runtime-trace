@@ -548,7 +548,7 @@ class RuntimeStore:
 
         status = FlowStatus(
             run_id=row["run_id"],
-            status=RunStatus(row["status"]),
+            status=RunStatus(row["status"]) if row["status"] else RunStatus.ABORTED,
             current_state_id=row["current_state_id"],
             round_counters=json_loads(row["round_counters"]),
             memory_modes=json_loads(row["memory_modes"]),
@@ -1016,7 +1016,7 @@ def _row_to_run(row: sqlite3.Row) -> FlowRun:
         run_id=row["run_id"],
         flow_id=row["flow_id"],
         flow_version=row["flow_version"],
-        status=RunStatus(row["status"]),
+        status=RunStatus(row["status"]) if row["status"] else RunStatus.ABORTED,
         current_state_id=row["current_state_id"],
         round_counters=json_loads(row["round_counters"]),
         created_at=row["created_at"],

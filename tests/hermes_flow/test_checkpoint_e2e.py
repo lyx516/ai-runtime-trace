@@ -35,6 +35,10 @@ def _load_auto_debate():
 # Import tool_registry separately (we patch it before auto-debate functions use it)
 import tool_registry as _tool_registry_mod
 
+# engine.llm_client is where call_llm_tools actually lives (session.py calls it
+# via `llm_client.call_llm_tools(...)`), so patches must target this module.
+import engine.llm_client as _llm_client_mod
+
 from hermes_flow.schemas import AgentSessionState
 from hermes_flow.storage import RuntimeStore
 from hermes_flow.hooks import reset_bus, emit, Hook, subscribe
@@ -134,13 +138,13 @@ class TestCheckpointE2E:
         # runs inside _run_session_loop, patching tool_registry before the call works.
         call_count = [0]
 
-        def mock_llm(system, messages, tools):
+        def mock_llm(system, messages, tools, **kwargs):
             call_count[0] += 1
             if call_count[0] == 1:
                 return _make_tool_call_response("write_file", {"path": "test.txt", "content": "hello"})
             return _make_decision_response()
 
-        with patch.object(mod, "_call_llm_tools", mock_llm):
+        with patch.object(_llm_client_mod, "call_llm_tools", mock_llm):
             with patch.object(_tool_registry_mod, "execute_tool", return_value={"ok": True}):
                 with patch.object(_tool_registry_mod, "format_tool_results_for_llm",
                                   return_value="ok: wrote test.txt"):
@@ -199,10 +203,10 @@ class TestCheckpointE2E:
             run_id, p.get("role_id", ""), p.get("state_id", ""),
         ))
 
-        def mock_llm(system, messages, tools):
+        def mock_llm(system, messages, tools, **kwargs):
             return _make_decision_response()
 
-        with patch.object(mod, "_call_llm_tools", mock_llm):
+        with patch.object(_llm_client_mod, "call_llm_tools", mock_llm):
             result = mod._run_session_loop(loaded, store, run_id)
 
         assert result["value"] == "APPROVE"

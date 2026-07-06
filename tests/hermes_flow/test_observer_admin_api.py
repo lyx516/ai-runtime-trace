@@ -19,11 +19,16 @@ def _write_run(root: Path, run_id: str, created_at: str) -> None:
     conn.close()
 
 
-def test_observer_lists_only_the_canonical_runs_dir(tmp_path):
+def test_observer_lists_runs_from_all_scanned_dirs(tmp_path, monkeypatch):
+    """Observer now scans fixed, env-override, and legacy (.hermes-flow/runs) dirs."""
     fixed_runs = tmp_path / "fixed-runs"
-    legacy_runs = tmp_path / "project" / "experiments" / "vector-db" / ".hermes-flow" / "runs"
+    legacy_runs = tmp_path / "project" / ".hermes-flow" / "runs"
+    # Simulate an env-override dir (like agent-pool's HERMES_FLOW_RUNS_DIR)
+    pool_runs = tmp_path / "agent-pool" / ".hermes-flow" / "runs"
     _write_run(fixed_runs, "fixed-run", "2026-07-04T10:00:00+00:00")
     _write_run(legacy_runs, "legacy-run", "2026-07-04T09:00:00+00:00")
+    _write_run(pool_runs, "pool-run", "2026-07-04T11:00:00+00:00")
+    monkeypatch.setenv("HERMES_FLOW_RUNS_DIR", str(pool_runs))
 
     old_root = SSEHandler.project_root
     old_dir = SSEHandler.runs_dir
@@ -34,13 +39,18 @@ def test_observer_lists_only_the_canonical_runs_dir(tmp_path):
         runs = handler._list_runs()
         fixed_store = handler._read_store("fixed-run")
         legacy_store = handler._read_store("legacy-run")
+        pool_store = handler._read_store("pool-run")
     finally:
         SSEHandler.project_root = old_root
         SSEHandler.runs_dir = old_dir
 
-    assert [r["run_id"] for r in runs] == ["fixed-run"]
+    ids = [r["run_id"] for r in runs]
+    assert "fixed-run" in ids
+    assert "legacy-run" in ids
+    assert "pool-run" in ids
     assert fixed_store is not None
-    assert legacy_store is None
+    assert legacy_store is not None
+    assert pool_store is not None
 
 
 def test_admin_agents_scan_and_merge_inheritance(tmp_path):

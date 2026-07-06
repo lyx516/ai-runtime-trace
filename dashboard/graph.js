@@ -14,14 +14,10 @@ function parseRecipients(d) {
     return [];
   };
   const candidates = [
-    d.intended_recipients,
-    d.authorized_recipients,
-    d.recipients,
-    d.output && d.output.authorized_recipients,
-    d.output && d.output.recipients,
+    d.intended_recipients, d.authorized_recipients, d.recipients,
+    d.output && d.output.authorized_recipients, d.output && d.output.recipients,
     d.output && d.output.intended_recipients,
-    d.inputs && d.inputs.intended_recipients,
-    d.inputs && d.inputs.recipients,
+    d.inputs && d.inputs.intended_recipients, d.inputs && d.inputs.recipients,
   ];
   for (const c of candidates) {
     const values = readList(c).filter(Boolean);
@@ -41,16 +37,18 @@ function formatJson(v) {
 }
 
 function cleanupSequenceUi() {
-  if (typeof window._seqCleanup === 'function') {
-    try { window._seqCleanup(); } catch(e) {}
-  }
+  if (typeof window._seqCleanup === 'function') { try { window._seqCleanup(); } catch(e) {} }
   window._seqCleanup = null;
   document.getElementById('slider-track')?.remove();
   document.getElementById('slider-thumb')?.remove();
   document.getElementById('seq-current-highlight')?.remove();
-  window._seqEvents = [];
+  // Remove right panel only when leaving graph tab
+  const graphPanel = document.getElementById('panel-graph');
+  if (graphPanel && !graphPanel.classList.contains('active')) {
+    const rp = document.getElementById('gsg-right-panel');
+    if (rp) rp.remove();
+  }
   window._seqArrows = [];
-  window._sliderCurrentIdx = -1;
   window._ctxExpanded = false;
   if (typeof window.clearAgentContextCache === 'function') window.clearAgentContextCache();
 }
@@ -110,10 +108,217 @@ function normalizeEvents(thinkingRows, decisionRows, messageRows, transitionRows
   return events;
 }
 
-function renderGraph(data) { renderSequenceDiagram(data); }
+// ══════════════════════════════════════════════════════════════════════
+//  State Graph — vertical right panel, slider-aware, shows agents
+// ══════════════════════════════════════════════════════════════════════
 
-async function renderSequenceDiagram(g) {
+let _gsgData = null;
+
+function renderGraph(data) {
+  _gsgData = data;
+
+  // Create right panel
+  let rp = document.getElementById('gsg-right-panel');
+  if (!rp) {
+    rp = document.createElement('div');
+    rp.id = 'gsg-right-panel';
+    rp.style.cssText = 'width:140px;min-width:140px;background:var(--bg-elevated);border-left:1px solid var(--border);overflow-y:auto;overflow-x:hidden;flex-shrink:0;padding:10px 8px';
+    document.querySelector('.layout')?.appendChild(rp);
+  }
+  rp.innerHTML = '';
+
+  // Sequence diagram stays in graph-dag
   const dagEl = document.getElementById('graph-dag');
+  dagEl.innerHTML = '';
+  const seq = document.createElement('div');
+  seq.id = 'seq-container';
+  dagEl.appendChild(seq);
+
+  buildStateGraphVertical(rp, data, -1);
+  renderSequenceDiagramBody(data, seq);
+}
+
+function updateStateGraph(idx) {
+  const rp = document.getElementById('gsg-right-panel');
+  if (!rp || !_gsgData) return;
+  rp.innerHTML = '';
+  buildStateGraphVertical(rp, _gsgData, idx >= 0 ? idx : -1);
+}
+
+// ── Compute state statuses at a given slider index ────────────────────
+
+function stateStatusAt(g, sliderIdx) {
+  const states = g.states || [];
+  const events = window._seqEvents || [];
+
+  if (sliderIdx < 0 || sliderIdx >= events.length) {
+    const done = new Set();
+    (g.transitions||[]).forEach(t => done.add(t.from));
+    const current = g.current_state_id || '';
+    const activeAgents = new Set();
+    const currentState = states.find(s => s.state_id === current);
+    if (currentState) (currentState.actors||[]).forEach(a => activeAgents.add(a));
+    return {done, current, activeAgents};
+  }
+
+  const done = new Set();
+  let lastTo = '';
+  const activeAgents = new Set();
+
+  for (let i = 0; i <= sliderIdx; i++) {
+    const e = events[i];
+    if (!e) continue;
+    if (e.type === 'transition') {
+      const from = e.data.from || e.data.from_state_id || '';
+      const to = e.data.to || e.data.to_state_id || '';
+      if (from) done.add(from);
+      if (to) lastTo = to;
+    }
+    if (e.role && e.role !== 'gate' && sliderIdx - i < 8) activeAgents.add(e.role);
+  }
+
+  let current = lastTo;
+  if (!current && g.initial_state_id) current = g.initial_state_id;
+  if (!current && states.length) current = states[0].state_id;
+  if (done.has(current)) {
+    const trans = events.filter(e => e.type === 'transition' && e.ts);
+    const lastTrans = trans[trans.length - 1];
+    if (lastTrans) {
+      const to = lastTrans.data.to || lastTrans.data.to_state_id || '';
+      if (to) current = to;
+    }
+  }
+
+  return {done, current, activeAgents};
+}
+
+// ── Build vertical state graph SVG ────────────────────────────────────
+
+function buildStateGraphVertical(panel, g, sliderIdx) {
+  const states = g.states || [];
+  if (!states.length) {
+    panel.innerHTML = '<div style="color:var(--text-tertiary);font-size:10px;text-align:center;padding:20px 0">—</div>';
+    return;
+  }
+
+  const {done, current, activeAgents} = stateStatusAt(g, sliderIdx);
+
+  // Ordered states: non-terminal first, terminal last
+  const nodes = [...states.filter(s => !s.terminal), ...states.filter(s => s.terminal)];
+  const nw = 124, nh = 46, th = 32, gap = 10, px = 6, py = 4;
+  const totalH = nodes.length * (nh + gap) + gap + py * 2;
+  const totalW = nw + px * 2;
+
+  const svg = svgEl('svg', {width: totalW, height: totalH, viewBox: `0 0 ${totalW} ${totalH}`});
+  svg.style.display = 'block';
+
+  const defs = svgEl('defs');
+  defs.innerHTML = '<filter id="vglow"><feGaussianBlur stdDeviation="2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>';
+  svg.appendChild(defs);
+
+  const idxMap = {};
+  nodes.forEach((s, i) => idxMap[s.state_id] = i);
+
+  // Edges (arrows going down)
+  (g.transitions||[]).forEach(t => {
+    const fi = idxMap[t.from], ti = idxMap[t.to];
+    if (fi === undefined || ti === undefined) return;
+    const x1 = px + nw / 2, y1 = py + fi * (nh + gap) + nh;
+    const x2 = px + nw / 2, y2 = py + ti * (nh + gap);
+    const isFromDone = done.has(t.from);
+    const isFromCurrent = t.from === current;
+    const color = isFromCurrent ? '#58a6ff' : isFromDone ? '#3fb950' : 'var(--border-accent)';
+    const eg = svgEl('g');
+    eg.appendChild(svgEl('line', {x1, y1, x2, y2: y2-5, stroke: color, 'stroke-width': '2', 'stroke-dasharray': isFromCurrent ? '4,3' : isFromDone ? '' : '3,3'}));
+    eg.appendChild(svgEl('polygon', {points: `${x1-3},${y2-5} ${x1+3},${y2-5} ${x1},${y2}`, fill: color}));
+    svg.appendChild(eg);
+  });
+
+  // Nodes
+  nodes.forEach((s, i) => {
+    const isTerm = s.terminal;
+    const h = isTerm ? th : nh;
+    const x = px, y = py + i * (nh + gap) + (isTerm ? (nh - th) / 2 : 0);
+    const cur = s.state_id === current;
+    const comp = done.has(s.state_id);
+
+    const g = svgEl('g');
+
+    if (cur) {
+      g.appendChild(svgEl('rect', {x: x-1, y: y-1, width: nw+2, height: h+2, rx: '6', fill: 'rgba(88,166,255,0.05)', filter: 'url(#vglow)'}));
+    }
+
+    g.appendChild(svgEl('rect', {
+      x, y, width: nw, height: h, rx: isTerm ? '14' : '5',
+      fill: cur ? 'rgba(88,166,255,0.08)' : comp ? 'rgba(63,185,80,0.05)' : 'transparent',
+      stroke: cur ? '#58a6ff' : comp ? '#3fb950' : isTerm ? 'var(--border-accent)' : 'var(--border)',
+      'stroke-width': cur ? '2.5' : '1.5',
+      'stroke-dasharray': isTerm ? '3,3' : '',
+    }));
+
+    // State name
+    g.appendChild(svgEl('text', {
+      x: x + 8, y: y + (isTerm ? 14 : 15),
+      fill: isTerm ? 'var(--text-tertiary)' : cur ? '#58a6ff' : comp ? 'var(--text-secondary)' : 'var(--text-secondary)',
+      'font-size': isTerm ? '10' : '11',
+      'font-weight': '700',
+    }, s.state_id));
+
+    if (!isTerm) {
+      // Agent dots below state name
+      const actors = s.actors || [];
+      const mid = x + nw / 2;
+      const dotBase = y + 28;
+      const dotGap = Math.min(22, nw / Math.max(1, actors.length));
+      const startX = mid - ((actors.length - 1) * dotGap) / 2;
+      actors.forEach((a, ai) => {
+        const isActive = activeAgents.has(a);
+        const cx = startX + ai * dotGap;
+        const col = isActive ? '#58a6ff' : 'var(--text-tertiary)';
+        g.appendChild(svgEl('circle', {cx, cy: dotBase, r: isActive ? 4 : 2.5, fill: col, stroke: 'var(--bg-elevated)', 'stroke-width': '1.5'}));
+        if (isActive) {
+          g.appendChild(svgEl('text', {x: cx, y: dotBase + 10, 'text-anchor': 'middle', fill: col, 'font-size': '7', 'font-weight': '700'}, a));
+        }
+      });
+
+      // Decision badges on right side
+      const decs = s.decisions || [];
+      const approve = decs.filter(d => d.value === 'APPROVE' || d.value === 'PASS').length;
+      const changes = decs.filter(d => d.value === 'REQUEST_CHANGES' || d.value === 'FAIL').length;
+      if (approve > 0 || changes > 0) {
+        const parts = [];
+        if (approve > 0) parts.push('✓'+approve);
+        if (changes > 0) parts.push('✗'+changes);
+        g.appendChild(svgEl('text', {x: x + nw - 4, y: y + 13, 'text-anchor': 'end', fill: 'var(--text-tertiary)', 'font-size': '8'}, parts.join(' ')));
+      }
+    }
+
+    svg.appendChild(g);
+  });
+
+  // Status indicator at very bottom
+  const status = g.status || '';
+  if (status) {
+    const sColor = status === 'completed' ? '#3fb950' : status === 'active' ? '#58a6ff' : '#f85149';
+    svg.appendChild(svgEl('text', {x: px + nw / 2, y: totalH - py + 6, 'text-anchor': 'middle', fill: sColor, 'font-size': '8', 'font-weight': '600'}, status));
+  }
+
+  panel.appendChild(svg);
+}
+
+function svgEl(tag, attrs, text) {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  if (attrs) for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+  if (text) el.textContent = text;
+  return el;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  Sequence Diagram
+// ══════════════════════════════════════════════════════════════════════
+
+async function renderSequenceDiagramBody(g, container) {
+  const dagEl = container || document.getElementById('graph-dag');
   cleanupSequenceUi();
   dagEl.innerHTML = '<div style="color:var(--text-tertiary);padding:12px">Loading timeline ...</div>';
   const states = g.states || [];
@@ -132,6 +337,8 @@ async function renderSequenceDiagram(g) {
     states.forEach(s=>(s.actors||[]).forEach(a=>{if(!seen.has(a)){seen.add(a);agents.push(a);}}));
 
     const events = normalizeEvents(thR, decR, msgR, transitions);
+    window._seqEvents = events;
+
     const currentActors = new Set((states.find(s=>s.state_id===currentState)?.actors||[]));
 
     const colW = 300, gateW = 120, timeW = 70, rowH = 40;
@@ -171,13 +378,9 @@ async function renderSequenceDiagram(g) {
     // Scrollable event rows
     html += '<div id="seq-scroll" style="overflow-x:auto;position:relative;z-index:0">';
     html += '<div id="seq-body" style="min-width:'+totalW+'px;position:relative">';
-
-    // SVG layer
     html += '<svg id="seq-arrows" style="position:absolute;top:32px;left:0;width:100%;height:0;z-index:1;overflow:visible;pointer-events:none"></svg>';
 
-    // ── Event rows ──
     const arrows = [];
-    window._seqEvents = events;
     window._ctxExpanded = false;
     events.forEach((e, idx) => {
       const yPos = idx * rowH;
@@ -270,8 +473,7 @@ async function renderSequenceDiagram(g) {
   }
 }
 
-// ── Slider (vertical track on time gutter) ──
-// ── Slider (fixed-position thumb on left edge) ──
+// ── Slider ──
 
 function initSlider(eventCount) {
   let track = document.getElementById('slider-track');
@@ -369,6 +571,7 @@ function initSlider(eventCount) {
     if (scrollIntoView) scrollSelectedRowIntoView(idx);
     renderThumb(idx);
     updateContextBars(idx);
+    updateStateGraph(idx);
   }
 
   function updateContextBars(idx) {
@@ -403,8 +606,8 @@ function initSlider(eventCount) {
     const d = e.data || {};
     if (e.type === 'toolCall') return 'tool: '+(d.step_type || '').replace(/_/g, ' ');
     if (e.type === 'decision') return 'decision: '+(d.value || '');
-    if (e.type === 'message') return 'message → ['+parseRecipients(d).join(',')+']';
-    return 'transition: '+(d.from || '')+' → '+(d.to || '');
+    if (e.type === 'message') return 'message \u2192 ['+parseRecipients(d).join(',')+']';
+    return 'transition: '+(d.from || '')+' \u2192 '+(d.to || '');
   }
 
   function eventBody(e) {
@@ -466,7 +669,7 @@ function initSlider(eventCount) {
       const items = ctx[role] || [];
       const focus = contextFocusIndex(items, idx);
       html += '<div class="ctx-context-col" data-role="'+escapeHtml(role)+'" style="width:'+w+'px;flex-shrink:0;border-left:1px solid var(--border);padding:6px;max-height:42vh;overflow:auto;scroll-behavior:auto">';
-      html += '<div style="font-weight:600;color:'+(role==='gate'?'var(--text-tertiary)':'var(--accent)')+';margin-bottom:6px">'+escapeHtml(role)+' · '+items.length+'</div>';
+      html += '<div style="font-weight:600;color:'+(role==='gate'?'var(--text-tertiary)':'var(--accent)')+';margin-bottom:6px">'+escapeHtml(role)+' \u00b7 '+items.length+'</div>';
       if (role !== 'gate') {
         html += '<div class="agent-full-context-slot" data-role="'+escapeHtml(role)+'" data-idx="'+idx+'" style="margin-bottom:8px"></div>';
       }
@@ -475,7 +678,7 @@ function initSlider(eventCount) {
         const e = item.event;
         const active = n === focus;
         html += '<div class="ctx-context-item'+(active?' current':'')+'" data-event-idx="'+item.eventIdx+'" data-role="'+escapeHtml(contextRoleId(role))+'" style="border-left:3px solid '+eventColor(e)+';padding:5px 6px;margin-bottom:8px;border-radius:4px;background:'+(active?'rgba(88,166,255,0.18)':'transparent')+';box-shadow:'+(active?'inset 0 0 0 1px rgba(88,166,255,0.45)':'none')+'">'+
-          '<div style="color:'+eventColor(e)+';font-weight:600">'+(n+1)+'. #'+item.eventIdx+' '+escapeHtml(item.label)+' · '+escapeHtml(eventTitle(e))+(active?' <span style="color:var(--accent);font-size:8px">CURRENT</span>':'')+'</div>'+
+          '<div style="color:'+eventColor(e)+';font-weight:600">'+(n+1)+'. #'+item.eventIdx+' '+escapeHtml(item.label)+' \u00b7 '+escapeHtml(eventTitle(e))+(active?' <span style="color:var(--accent);font-size:8px">CURRENT</span>':'')+'</div>'+
           '<pre style="white-space:pre-wrap;word-break:break-word;margin:3px 0 0;color:var(--text-secondary);font-family:SFMono-Regular,monospace;font-size:9px">'+escapeHtml(eventBody(e) || formatJson(e.data))+'</pre>'+
           '</div>';
       });
@@ -565,13 +768,13 @@ function renderDot(e, idx) {
     const rcpts = parseRecipients(e.data).join(',');
     return '<div style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:2" title="message to ['+rcpts+']">'+
       '<div style="width:10px;height:10px;border-radius:50%;background:#a371f7;border:2px solid var(--bg-base)"></div>'+
-      '<div style="position:absolute;top:50%;right:14px;transform:translateY(-50%);font-size:9px;color:#a371f7;white-space:nowrap;pointer-events:none">→ ['+rcpts+']</div></div>';
+      '<div style="position:absolute;top:50%;right:14px;transform:translateY(-50%);font-size:9px;color:#a371f7;white-space:nowrap;pointer-events:none">\u2192 ['+rcpts+']</div></div>';
   }
   if (e.type === 'transition') {
-    const to = e.data.to||'→';
+    const to = e.data.to||'\u2192';
     return '<div style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:2" title="transition: '+to+'">'+
       '<div style="width:6px;height:6px;border-radius:50%;background:var(--text-tertiary);border:2px solid var(--bg-base)"></div>'+
-      '<div style="position:absolute;top:50%;left:14px;transform:translateY(-50%);font-size:9px;color:var(--text-tertiary);white-space:nowrap;pointer-events:none">→ '+to+'</div></div>';
+      '<div style="position:absolute;top:50%;left:14px;transform:translateY(-50%);font-size:9px;color:var(--text-tertiary);white-space:nowrap;pointer-events:none">\u2192 '+to+'</div></div>';
   }
   return '';
 }
@@ -615,5 +818,3 @@ function drawArrows() {
     svg.appendChild(g);
   });
 }
-
-

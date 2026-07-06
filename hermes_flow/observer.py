@@ -156,14 +156,21 @@ class SSEHandler(http.server.BaseHTTPRequestHandler):
         return None
 
     def _iter_runs_dirs(self) -> list[Path]:
-        """Return all run directories — primary + fallback (git root legacy runs)."""
+        """Return all run directories — evn override, primary, and fallback."""
         dirs = []
+        # 1. Env override (HERMES_FLOW_RUNS_DIR)
+        _env_runs = os.environ.get("HERMES_FLOW_RUNS_DIR")
+        if _env_runs:
+            _p = Path(_env_runs).expanduser().resolve()
+            if _p.exists():
+                dirs.append(_p)
+        # 2. Primary: default  (hermes_flow/.hermes-flow/runs)
         if self.runs_dir.exists():
             dirs.append(self.runs_dir)
-        # Fallback: git root .hermes-flow/runs (old runs before cli.py fix)
+        # 3. Fallback: git root .hermes-flow/runs
         if self.project_root:
             _legacy = Path(self.project_root) / ".hermes-flow" / "runs"
-            if _legacy.exists() and _legacy != self.runs_dir:
+            if _legacy.exists() and _legacy not in dirs:
                 dirs.append(_legacy)
         return dirs
 

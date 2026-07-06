@@ -47,16 +47,16 @@ flow:
   - tasks.md
 # ── IMPLEMENT: implementer 写代码+报告，code-reviewer 审查 ──
 - state: IMPLEMENT
-  description: 编写实现代码和报告（由 code-reviewer 审查）
+  description: 编写实现代码和报告（由 code-reviewer 审查）。注意：代码写完后最后写 README.md。
   actors: implementer+code-reviewer
   gate:
     type: product
-    file: implementation-report.md
+    file: README.md
     pass: REVIEW
     fail: IMPLEMENT
     max: 4
   output_artifacts:
-  - implementation-report.md
+  - README.md
 # ── REVIEW: code-reviewer 写最终审查报告 ──
 - state: REVIEW
   description: 最终审查报告

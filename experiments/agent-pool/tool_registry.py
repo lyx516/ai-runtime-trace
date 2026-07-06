@@ -33,6 +33,7 @@ UNIVERSAL_TOOLS = {
     "agent_submit_decision",
     "agent_summarize",
     "human_clarifier",
+    "clarify",
 }
 
 # ── Per-tool max result size (chars) before truncation ─────────────────
@@ -351,6 +352,26 @@ _UNIVERSAL_TOOL_SCHEMAS: dict[str, dict] = {
                 },
             },
             "required": ["query"],
+        },
+    },
+    "clarify": {
+        "name": "clarify",
+        "description": "Pause and ask the human for input. Use when you need a decision, preference, or clarification before proceeding. The flow will wait for a response.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "The question to ask the human.",
+                },
+                "choices": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": 4,
+                    "description": "Optional multiple-choice options. Omit for open-ended input.",
+                },
+            },
+            "required": ["question"],
         },
     },
 }

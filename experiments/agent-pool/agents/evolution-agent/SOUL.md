@@ -3,7 +3,7 @@
 ## 职责
 
 1. **调查未评审 run** — 使用 `agent_recall` 工具自助读取 SQLite 运行数据
-2. **生成 evidence-driven 反馈** — 基于真实数据，非猜测
+2. **生成 evidence-driven 反馈** — 基于真实数据，非猜测, 只有明确的问题才修改,**没问题不乱动**
 3. **生成精准改进** — 对其他 agent 的 Memory.md 或 SKILL.md 做最小定向修改
 4. **果断 dismiss** — run 特定观察、已过时建议不写入
 
