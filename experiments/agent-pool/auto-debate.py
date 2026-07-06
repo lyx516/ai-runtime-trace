@@ -700,6 +700,131 @@ def _run_agent_session(
     return _run_session_loop(state, store, run_id)
 
 
+def _handle_agent_recall(fn_args: dict, store, run_id: str) -> dict:
+    """agent_recall tool — pure SQLite reads, Hermes session_search style.
+
+    Five shapes inferred from query type, no mode parameter:
+      overview    — run summary
+      transitions — state path with retry detection
+      decisions   — agent decisions, filterable by state/agent
+      thinking    — tool call log, filterable by agent, paginated
+      messages    — agent messages, filterable by state/agent, paginated
+    """
+    import json as _json
+
+    query = fn_args.get("query", "")
+    agent = fn_args.get("agent", "") if isinstance(fn_args.get("agent"), str) else ""
+    state = fn_args.get("state", "") if isinstance(fn_args.get("state"), str) else ""
+    limit = min(int(fn_args.get("limit", 20) or 20), 50)
+    offset = int(fn_args.get("offset", 0) or 0)
+
+    conn = store.connect()
+
+    try:
+        if query == "overview":
+            run_row = conn.execute(
+                "SELECT status, flow_id, created_at FROM runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if not run_row:
+                return {"ok": False, "error": "run not found"}
+            dec_cnt = conn.execute("SELECT COUNT(*) as c FROM decisions WHERE run_id=?", (run_id,)).fetchone()["c"]
+            trans_cnt = conn.execute("SELECT COUNT(*) as c FROM transitions WHERE run_id=?", (run_id,)).fetchone()["c"]
+            msg_cnt = conn.execute("SELECT COUNT(*) as c FROM messages WHERE run_id=?", (run_id,)).fetchone()["c"]
+            state_rows = conn.execute("SELECT state_id FROM states WHERE run_id=? ORDER BY rowid", (run_id,)).fetchall()
+            agent_rows = conn.execute("SELECT DISTINCT role_id FROM decisions WHERE run_id=?", (run_id,)).fetchall()
+            return {
+                "ok": True, "query": "overview",
+                "status": run_row["status"],
+                "flow_id": run_row["flow_id"],
+                "created_at": run_row["created_at"],
+                "agents": [r["role_id"] for r in agent_rows],
+                "states": [r["state_id"] for r in state_rows],
+                "decision_count": dec_cnt,
+                "transition_count": trans_cnt,
+                "message_count": msg_cnt,
+            }
+
+        elif query == "transitions":
+            rows = conn.execute(
+                "SELECT from_state_id, to_state_id FROM transitions WHERE run_id=? ORDER BY rowid", (run_id,)
+            ).fetchall()
+            path = " → ".join([f"{r['from_state_id']}→{r['to_state_id']}" for r in rows])
+            # Detect retries: same to_state appearing more than once
+            to_counts: dict = {}
+            for r in rows:
+                to_counts[r["to_state_id"]] = to_counts.get(r["to_state_id"], 0) + 1
+            retries = {k: v for k, v in to_counts.items() if v > 1}
+            return {
+                "ok": True, "query": "transitions",
+                "path": path,
+                "steps": [{"from": r["from_state_id"], "to": r["to_state_id"]} for r in rows],
+                "total_steps": len(rows),
+                "retry_states": retries or None,
+            }
+
+        elif query == "decisions":
+            where = ["run_id = ?"]
+            params: list = [run_id]
+            if agent:
+                where.append("role_id = ?"); params.append(agent)
+            if state:
+                where.append("state_id = ?"); params.append(state)
+            sql = f"SELECT state_id, role_id, value, reason, created_at FROM decisions WHERE {' AND '.join(where)} ORDER BY rowid LIMIT ? OFFSET ?"
+            params.extend([limit + 1, offset])
+            rows = conn.execute(sql, params).fetchall()
+            results = [{"state": r["state_id"], "agent": r["role_id"], "value": r["value"],
+                         "reason": (r["reason"] or "")[:200], "at": r["created_at"]} for r in rows]
+            has_more = len(results) > limit
+            if has_more:
+                results = results[:limit]
+            return {"ok": True, "query": "decisions", "results": results, "count": len(results),
+                    "has_more": has_more, "offset": offset, "limit": limit}
+
+        elif query == "thinking":
+            where = ["run_id = ?"]
+            params = [run_id]
+            if agent:
+                where.append("role_id = ?"); params.append(agent)
+            sql = f"SELECT role_id, state_id, step_type, output_json, created_at FROM thinking_events WHERE {' AND '.join(where)} ORDER BY rowid LIMIT ? OFFSET ?"
+            params.extend([limit + 1, offset])
+            rows = conn.execute(sql, params).fetchall()
+            results = []
+            for r in rows:
+                ok_flag = "true" in (r["output_json"] or "").lower() if r["output_json"] else None
+                results.append({"agent": r["role_id"], "state": r["state_id"], "tool": r["step_type"],
+                                "ok": ok_flag, "at": r["created_at"]})
+            has_more = len(results) > limit
+            if has_more:
+                results = results[:limit]
+            return {"ok": True, "query": "thinking", "results": results, "count": len(results),
+                    "has_more": has_more, "offset": offset, "limit": limit,
+                    "message": f"Showing {len(results)} of {len(results) + offset}+ tool calls. Use offset={offset + limit} for next page." if has_more else "All results shown."}
+
+        elif query == "messages":
+            where = ["run_id = ?"]
+            params = [run_id]
+            if agent:
+                where.append("from_role = ?"); params.append(agent)
+            if state:
+                where.append("state_id = ?"); params.append(state)
+            sql = f"SELECT state_id, from_role, kind, content, created_at FROM messages WHERE {' AND '.join(where)} ORDER BY rowid LIMIT ? OFFSET ?"
+            params.extend([limit + 1, offset])
+            rows = conn.execute(sql, params).fetchall()
+            results = [{"state": r["state_id"], "from": r["from_role"], "kind": r["kind"],
+                         "content": (r["content"] or "")[:300], "at": r["created_at"]} for r in rows]
+            has_more = len(results) > limit
+            if has_more:
+                results = results[:limit]
+            return {"ok": True, "query": "messages", "results": results, "count": len(results),
+                    "has_more": has_more, "offset": offset, "limit": limit}
+
+        else:
+            return {"ok": False, "error": f"Unknown recall query: '{query}'. Valid: overview, transitions, decisions, thinking, messages"}
+
+    except Exception as e:
+        return {"ok": False, "error": f"recall failed: {e}"}
+
+
 def _run_session_loop(
     state: AgentSessionState,
     store,
@@ -884,6 +1009,10 @@ def _run_session_loop(
                         print(f"     📚 skill_load({_sn}) → {_found.name} ({len(_body)}B)")
                     else:
                         result = {"ok": False, "error": f"skill '{_sn}' not found in {_skill_dir}"}
+                    tool_calls_made += 1
+                elif fn_name == "agent_recall":
+                    result = _handle_agent_recall(fn_args, store, run_id)
+                    print(f"     🧠 recall({fn_args.get('query','?')}, agent={fn_args.get('agent','-')}, state={fn_args.get('state','-')})")
                     tool_calls_made += 1
                 elif fn_name in ("memory_read", "memory_write", "skill_create", "skill_update",
                                  "agent_submit_decision", "agent_summarize", "human_clarifier"):
@@ -1195,9 +1324,28 @@ def _make_hook_handlers(store, run_id: str):
             payload.get("state_id", ""),
         )
 
+    def on_session_decide(hook: str, payload: dict) -> None:
+        """Save decision from submit_decision tool call."""
+        try:
+            from datetime import datetime, timezone
+            conn = store.connect()
+            from uuid import uuid4 as _uuid4
+            conn.execute(
+                "INSERT INTO decisions(decision_id,run_id,state_id,role_id,value,reason,artifacts,created_at)"
+                " VALUES(?,?,?,?,?,?,?,?)",
+                (_uuid4().hex[:12], payload.get("run_id", run_id),
+                 payload.get("state_id", ""), payload.get("role_id", ""),
+                 payload.get("value", ""), payload.get("reason", ""),
+                 "[]", datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+        except Exception:
+            pass
+
     subscribe(Hook.LLM_DONE, on_llm_done)
     subscribe(Hook.TOOL_DONE, on_tool_done)
     subscribe(Hook.TURN_END, on_turn_end)
+    subscribe(Hook.SESSION_DECIDE, on_session_decide)
     subscribe(Hook.SESSION_DONE, on_session_done)
 
 
@@ -1380,17 +1528,6 @@ def _run_fsm_loop(store, run_id: str, goal: str, agent_ids: list[str], agents: d
             print(f"  ⏸ pending: {r3.get('error', '?')}")
             break
 
-    # Manager evaluation
-    if agents.get("manager"):
-        print(f"\n{'='*60}")
-        print(f"📝 管理 Agent 评审会议")
-        print(f"{'='*60}")
-        try:
-            mgr_result = manager_evaluate(run_id, goal, agent_ids, agents, store)
-            _persist_performance(store, run_id, goal, agent_ids, mgr_result)
-        except Exception as e:
-            print(f"  ⚠️ 评审异常: {e}")
-
     # Final report
     trans = conn.execute("SELECT from_state_id, to_state_id FROM transitions ORDER BY rowid").fetchall()
     msgs = conn.execute("SELECT from_role, substr(content,1,60) FROM messages ORDER BY rowid").fetchall()
@@ -1409,13 +1546,6 @@ def _run_fsm_loop(store, run_id: str, goal: str, agent_ids: list[str], agents: d
     for r in decs:
         print(f"  [{r['state_id']:15s}] {r['role_id']:12s} → {r['value']}")
     print(f"\n🌐 http://localhost:8765\n")
-
-    # Persist performance even without manager evaluation
-    try:
-        if store.load_run_performance(run_id) is None:
-            _persist_performance(store, run_id, goal, agent_ids, None)
-    except Exception:
-        pass
 
 
 def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, agents: dict, output_dir: str = ""):
@@ -2136,7 +2266,7 @@ def _show_feedback(agent_id: str | None = None):
 
 
 def _evolve_agent(agent_id: str, apply: bool = False):
-    """Run EvolutionAgent: read feedback, generate precise modifications, optionally apply."""
+    """Process pending feedback for a single agent with EvolutionAgent LLM."""
     from hermes_flow.storage import RuntimeStore
 
     dirs = [Path(PROJECT_ROOT) / ".hermes-flow" / "runs",
@@ -2176,15 +2306,14 @@ def _evolve_agent(agent_id: str, apply: bool = False):
         for fb in all_fb
     )
 
-    soul_size = len(soul_content)
-    memory_size = len(memory_content)
-    MAX_MEMORY = 4096   # 4KB hard cap
-    MAX_SKILL  = 8192   # 8KB hard cap
+    MAX_MEMORY = 4096
+    MAX_SKILL = 8192
 
-    size_info = f"SOUL: {soul_size}B, Memory: {memory_size}B/{MAX_MEMORY}B, SKILL: N/A"
+    memory_size = len(memory_content)
+    size_info = f"Memory: {memory_size}B/{MAX_MEMORY}B"
     if agent_dir.joinpath("SKILL.md").exists():
         skill_size = agent_dir.joinpath("SKILL.md").stat().st_size
-        size_info = f"SOUL: {soul_size}B, Memory: {memory_size}B/{MAX_MEMORY}B, SKILL: {skill_size}B/{MAX_SKILL}B"
+        size_info += f", SKILL: {skill_size}B/{MAX_SKILL}B"
 
     system = f"""你是 EvolutionAgent——一个精确、谨慎的 agent 修改执行者。
 你**不能自由发挥**，只能基于 feedback 中的具体证据进行定向修改。
@@ -2193,24 +2322,21 @@ def _evolve_agent(agent_id: str, apply: bool = False):
 文件大小限制: {size_info}
 
 你的能力：
-- update_memory: 追加或修正 Memory.md（硬上限 {MAX_MEMORY}B，超限时只能替换旧内容）
-- update_skill: patch 或新增 SKILL.md（硬上限 {MAX_SKILL}B，超限时只能替换旧内容）
-- add_tool: 从工具池中分配新工具
-- dismiss: 如果 feedback 不适用，标记为 dismissed
+- update_memory: 追加 Memory.md（纯改进条目，硬上限 {MAX_MEMORY}B）
+- update_skill: 追加 SKILL.md（纯改进条目，硬上限 {MAX_SKILL}B）
+- dismiss: feedback 不适用或 run 特定时标记为 dismissed
 
-修改原则：
-1. 每条修改必须引用具体的 feedback 证据
-2. 最小改动——能不改就不改
-3. 如果 feedback 已过时或不适用，果断 dismiss
-4. **detail 格式规则见你的 Memory.md** — 禁止元指令和证据
+写入规则 — 严格遵守：
+1. detail 必须是纯改进条目，格式: "- 具体改进点"（列表项格式）
+2. 禁止写 "## Evolution Update"、run_id、evidence、元指令（"追加"、"修改"、"建议"）
+3. 禁止写 run 特定观察（团队搭配、具体任务名、某次运行教训）
+4. 只写通用可复用的技能/流程改进
+5. 如果 feedback 描述的是 run 特定现象 → dismiss
 
 响应 JSON:
-{{"actions": [{{"type": "update_memory|update_skill|add_tool|dismiss", "detail": "具体修改内容"}}]}}"""
+{{"actions": [{{"type": "update_memory|update_skill|dismiss", "detail": "- 纯改进条目内容"}}]}}"""
 
     user = f"""## Agent: {agent_id}
-
-### 当前 SOUL
-{soul_content[:800]}
 
 ### 当前 Memory
 {memory_content[:800]}
@@ -2232,11 +2358,8 @@ def _evolve_agent(agent_id: str, apply: bool = False):
     for i, act in enumerate(actions, 1):
         atype = act.get("type", "?")
         detail = act.get("detail", "")[:200]
-        fb_ids = act.get("feedback_ids", [])
         print(f"  {i}. [{atype}] {detail}")
-        print(f"     feedback_refs: {fb_ids}")
 
-    # Confirm / Apply
     if apply:
         agent_dir = _SCRIPT_DIR / "agents" / agent_id
         applied = 0
@@ -2252,23 +2375,20 @@ def _evolve_agent(agent_id: str, apply: bool = False):
                 max_bytes = MAX_SKILL if atype == "update_skill" else MAX_MEMORY
                 current_size = target_file.stat().st_size if target_file.exists() else 0
 
-                if not detail.startswith("#"):
-                    detail = f"\n## Evolution Update\n{detail}\n"
+                # Write clean detail — no "## Evolution Update" wrapper
                 new_content = f"\n{detail}\n"
 
-                # Dedup: skip if already present
                 if target_file.exists():
                     existing = target_file.read_text()
                     if detail.strip() in existing:
-                        print(f"  ⏭  Skipped {target_file.name} (content already exists)")
+                        print(f"  ⏭  Skipped {target_file.name} (already present)")
                         continue
 
-                # Hard limit — report back to EvolutionAgent for self-correction
                 if current_size + len(new_content) > max_bytes:
-                    _err = f"❌ {target_file.name} 超限 ({current_size}B/{max_bytes}B)。当前内容:\n{existing[:2000]}"
-                    print(f"  ⚠️  {target_file.name} 超限，要求 EvolutionAgent 重新生成...")
+                    _msg = f"❌ {target_file.name} 超限 ({current_size}B/{max_bytes}B)"
+                    print(f"  ⚠️  {_msg}")
                     _retry_result = call_llm(
-                        system, f"{user}\n\n{_err}\n\n请精简或替换旧内容，重新生成 detail（需 < {max_bytes - current_size}B）。",
+                        system, f"{user}\n\n{_msg}\n请精简或替换旧条目，重新生成 detail（需 < {max_bytes - current_size}B）。",
                         temperature=0.3, max_tokens=2000)
                     _retry_actions = _retry_result.get("actions", [])
                     if _retry_actions:
@@ -2287,7 +2407,7 @@ def _evolve_agent(agent_id: str, apply: bool = False):
                     f.write(new_content)
                 applied += 1
                 print(f"  ✅ Updated {target_file.name} ({current_size}B → {current_size + len(new_content)}B)")
-        # Mark all feedback as applied
+
         for fb in all_fb:
             store.mark_feedback_applied(fb["row_id"])
         print(f"\n  🧬 Applied {applied} changes, cleared {len(all_fb)} feedback items")
@@ -2300,104 +2420,275 @@ def _evolve_agent(agent_id: str, apply: bool = False):
 
 def _evolve_all():
     """Process all agents with pending feedback."""
+    _evolve()
+
+
+def _extract_eval_json(conn, run_id: str, role_id: str) -> dict | None:
+    """Extract evaluation JSON from EvolutionAgent's thinking_events.
+
+    Searches the last 30 thinking events for JSON containing 'feedback' or
+    'evolution_actions'. Tries: (1) code-fenced JSON, (2) bare JSON objects,
+    (3) submit_decision reason field.
+    """
+    import re
+    rows = conn.execute(
+        "SELECT step_type, output_json FROM thinking_events WHERE run_id=? AND role_id=? ORDER BY rowid DESC LIMIT 30",
+        (run_id, role_id),
+    ).fetchall()
+
+    contents_to_search = []
+
+    # 1. Collect all assistant text contents
+    for r in rows:
+        if r["step_type"] == "llm_call" and r["output_json"]:
+            try:
+                output = json.loads(r["output_json"])
+                content = output.get("content", "")
+                if content:
+                    contents_to_search.append(content)
+            except Exception:
+                pass
+
+    # 2. Also check submit_decision reason
+    dec_row = conn.execute(
+        "SELECT reason FROM decisions WHERE run_id=? AND role_id=? ORDER BY rowid DESC LIMIT 1",
+        (run_id, role_id),
+    ).fetchone()
+    if dec_row and dec_row["reason"]:
+        contents_to_search.append(dec_row["reason"])
+
+    # 3. Try to extract JSON from each content
+    # 3. Try to extract JSON from each content
+    for content in contents_to_search:
+        m = re.search(r'```(?:json)?\s*(\{.*"feedback".*\})\s*```', content, re.DOTALL)
+        if not m:
+            m = re.search(r'\{.*"feedback".*\}', content, re.DOTALL)
+        if m:
+            try:
+                return json.loads(m.group(1) if m.lastindex else m.group(0))
+            except Exception:
+                pass
+
+    return None
+
+
+def _evolve():
+    """EvolutionAgent: scan all un-evaluated runs, investigate via agent_recall, produce feedback + actions.
+
+    Finds runs that have no run_performance entry (not yet evaluated).
+    For each run, starts an EvolutionAgent session with agent_recall tool
+    to investigate, produce per-agent feedback, and generate evolution actions.
+    """
     from hermes_flow.storage import RuntimeStore
 
     dirs = [Path(PROJECT_ROOT) / ".hermes-flow" / "runs",
             Path(__file__).resolve().parent / ".hermes-flow" / "runs"]
-    by_agent: dict[str, list] = {}
 
+    # Collect all run dirs with their stores
+    unevaluated: list[tuple[str, RuntimeStore]] = []
     for base in dirs:
         if not base.exists():
             continue
-        for d in base.iterdir():
+        for d in sorted(base.iterdir()):
             if not d.is_dir():
                 continue
             try:
                 store = RuntimeStore(d)
                 store.init_schema()
-                for fb in store.load_all_pending_feedback():
-                    by_agent.setdefault(fb["agent_id"], []).append(fb)
+                # Check if already evaluated (has run_performance entry)
+                perf = store.load_run_performance(d.name)
+                if perf is not None:
+                    continue  # already evaluated, skip
+                # Check run exists and is completed
+                run_row = store.connect().execute(
+                    "SELECT status, flow_id FROM runs WHERE run_id=?", (d.name,)
+                ).fetchone()
+                if run_row and run_row["status"] in ("completed", "active"):
+                    unevaluated.append((d.name, store))
             except Exception:
                 pass
 
-    if not by_agent:
-        print("✅ No pending feedback")
-        return
-
-    print(f"🧬 Evolving {len(by_agent)} agents...\n")
-    for agent_id in sorted(by_agent):
-        print(f"── {agent_id} ({len(by_agent[agent_id])} items) ──")
-        _evolve_agent(agent_id, apply=True)
-        print()
-
-    print("✅ All agents evolved. Run --feedback to verify.")
-
-
-def _evolve():
-    perf_data = _analyze_all_runs()
-    if not perf_data:
+    if not unevaluated:
+        print("✅ All runs evaluated. No pending runs.")
         return
 
     print(f"\n{'='*60}")
-    print(f"🧬 Evolution Suggestions")
-    print(f"{'='*60}\n")
+    print(f"🧬 EvolutionAgent: evaluating {len(unevaluated)} un-evaluated run(s)")
+    print(f"{'='*60}")
 
-    changes = []
+    # Load EvolutionAgent SOUL
+    evo_soul_path = _SCRIPT_DIR / "agents" / "evolution-agent" / "SOUL.md"
+    evo_soul = evo_soul_path.read_text() if evo_soul_path.exists() else ""
 
-    # Suggestion 1: Single-agent → prefer spec-team
-    scores = [p["success_score"] for p in perf_data]
-    bottlenecks = [p["bottleneck_state"] for p in perf_data]
-    single_count = sum(1 for b in bottlenecks if b in ("DONE", "?"))
-    if single_count >= len(perf_data) * 0.5 and sum(scores) / len(scores) < 70:
-        changes.append({
-            "title": "Prefer spec-team pipeline for tasks with deliverables",
-            "file": "agents/manager/SOUL.md",
-            "description": (
-                f"Direct-chat (single-agent) runs avg score {sum(s for p in perf_data if p['bottleneck_state'] in ('DONE','?') for s in [p['success_score']])/max(1,single_count):.0f} vs "
-                f"multi-agent {sum(s for p in perf_data if p['bottleneck_state'] not in ('DONE','?') for s in [p['success_score']])/max(1,len(perf_data)-single_count):.0f}. "
-                "Update manager SOUL to prefer spec-team for any task requiring file output."
-            ),
-        })
+    # Load agent pool (for agent_id info)
+    agents = load_agents()
 
-    # Suggestion 2: Self-loop termination (already fixed in code)
-    changes.append({
-        "title": "Self-loop termination for single-agent flows",
-        "file": "auto-debate.py::_run_fsm_loop",
-        "description": (
-            "Added self-loop detection: when gate transitions to same state and all roles decided, "
-            "mark run as completed instead of looping until max_rounds exhausted. "
-            "This fixes single-agent flows that previously scored 45 due to infinite DONE→DONE loops."
-        ),
-        "applied": True,
-    })
+    # Build EvolutionAgent's tool schemas
+    from tool_registry import DECISION_TOOL_SCHEMA
+    evo_tool_schemas = [DECISION_TOOL_SCHEMA]
+    # Add agent_recall schema
+    agent_recall_schema = {
+        "type": "function",
+        "function": {
+            "name": "agent_recall",
+            "description": "Recall runtime data from the run SQLite.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "enum": ["overview", "transitions", "decisions", "thinking", "messages"]},
+                    "agent": {"type": "string"},
+                    "state": {"type": "string"},
+                    "limit": {"type": "integer"},
+                    "offset": {"type": "integer"},
+                },
+                "required": ["query"],
+            },
+        },
+    }
+    evo_tool_schemas.append(agent_recall_schema)
+    # Add skill_load schema
+    skill_load_schema = {
+        "type": "function",
+        "function": {
+            "name": "skill_load",
+            "description": "Load the evaluate-flow skill.",
+            "parameters": {
+                "type": "object",
+                "properties": {"skill_name": {"type": "string"}},
+                "required": ["skill_name"],
+            },
+        },
+    }
+    evo_tool_schemas.append(skill_load_schema)
 
-    # Suggestion 3: Low-scoring agents
-    agent_scores: dict[str, list] = {}
-    for p in perf_data:
-        for aid, s in p.get("agent_scores", {}).items():
-            agent_scores.setdefault(aid, []).append(s)
-    for aid, scores_list in agent_scores.items():
-        avg = sum(scores_list) / len(scores_list)
-        if avg < 60 and len(scores_list) >= 2:
-            changes.append({
-                "title": f"Update {aid} skill prompts",
-                "file": f"shared/skills/{aid}/SKILL.md",
-                "description": (
-                    f"{aid} avg score {avg:.0f} over {len(scores_list)} runs. "
-                    f"Consider adding explicit exit signals (\"做完就交\"), clearer tool usage instructions, "
-                    f"or providing example outputs in the skill doc."
-                ),
-            })
+    total_feedback = 0
+    total_actions = 0
 
-    for i, c in enumerate(changes, 1):
-        status = "✅ APPLIED" if c.get("applied") else "📝 SUGGESTED"
-        print(f"{i}. [{status}] {c['title']}")
-        print(f"   File: {c['file']}")
-        print(f"   {c['description']}")
-        print()
+    for run_id, store in unevaluated:
+        print(f"\n{'─'*50}")
+        print(f"📊 Evaluating run: {run_id}")
+        print(f"{'─'*50}")
 
-    print("💡 To apply: review suggestions, edit files manually or re-run after confirming.")
-    return changes
+        # Get run info
+        conn = store.connect()
+        run_row = conn.execute("SELECT status, flow_id FROM runs WHERE run_id=?", (run_id,)).fetchone()
+        if not run_row:
+            print(f"  ⚠️  Run not found, skipping")
+            continue
+        goal = run_row["flow_id"]
+
+        # Build system prompt for EvolutionAgent evaluation session
+        system_prompt = f"""{evo_soul}
+
+## 评审任务
+
+你正在评审 run `{run_id}`（goal: {goal}）。
+
+使用 `agent_recall` 调查数据，按 evaluate-flow skill 流程操作。
+完成后**用 submit_decision 的 reason 字段提交 JSON 报告**：
+- 不写自然语言解释——reason 字段只放纯 JSON 字符串
+- value 设为 APPROVE（完成）或 REQUEST_CHANGES（数据不足需更多调查）
+
+JSON 格式：
+{{"feedback":[{{"agent_id":"x","category":"memory|skill|tool","suggestion":"...","evidence":"..."}}],"evolution_actions":[{{"type":"update_memory|update_skill|dismiss","agent_id":"x","detail":"- 纯改进条目"}}]}}
+
+无改进时 feedback 和 evolution_actions 均用空数组 []。"""
+
+        # Build initial messages
+        import json as _json
+        messages_json = _json.dumps([{
+            "role": "user",
+            "content": f"开始评审 run {run_id}。先加载评审流程 skill_load(\"evaluate-flow\")，然后用 agent_recall 调查。",
+        }], ensure_ascii=False)
+        tools_json = _json.dumps(evo_tool_schemas, ensure_ascii=False)
+
+        # Create EvolutionAgent session state
+        _evo_role_id = "evolution-agent"
+        _evo_state_id = "EVALUATE"
+        state = AgentSessionState(
+            run_id=run_id,
+            role_id=_evo_role_id,
+            state_id=_evo_state_id,
+            round_n=1,
+            system_prompt=system_prompt,
+            messages_json=messages_json,
+            tools_json=tools_json,
+            turn=0,
+            max_turns=20,
+        )
+
+        print(f"  🤖 EvolutionAgent investigating...")
+        # Register hooks so submit_decision gets saved to decisions table
+        reset_bus()
+        _make_hook_handlers(store, run_id)
+        session_result = _run_session_loop(state, store, run_id)
+        print(f"  ✅ Evaluation complete: {session_result.get('value', '?')}")
+
+        # Parse EvolutionAgent's JSON output from thinking_events
+        conn = store.connect()
+        eval_result = _extract_eval_json(conn, run_id, _evo_role_id)
+
+        if eval_result:
+            print(f"  📋 Found evaluation output")
+
+            # Save feedback
+            for fb in eval_result.get("feedback", []):
+                if fb.get("agent_id") and fb.get("suggestion"):
+                    store.save_agent_feedback(
+                        run_id=run_id,
+                        agent_id=fb["agent_id"],
+                        category=fb.get("category", "skill"),
+                        suggestion=fb["suggestion"],
+                        evidence=fb.get("evidence", ""),
+                    )
+                    total_feedback += 1
+                    print(f"     📝 feedback: [{fb['agent_id']}] {fb['suggestion'][:80]}")
+
+            # Apply evolution actions
+            evo_actions = eval_result.get("evolution_actions", [])
+            for act in evo_actions:
+                atype = act.get("type", "")
+                detail = act.get("detail", "")
+                target_agent = act.get("agent_id", "")
+                if atype == "dismiss":
+                    pending = store.load_agent_feedback(target_agent)
+                    for fb in pending:
+                        store.mark_feedback_dismissed(fb["row_id"])
+                    total_actions += 1
+                    print(f"     📋 dismiss: [{target_agent}]")
+                elif atype in ("update_memory", "update_skill") and target_agent and detail:
+                    target_file = _SCRIPT_DIR / "agents" / target_agent / ("SKILL.md" if atype == "update_skill" else "Memory.md")
+                    max_bytes = 8192 if atype == "update_skill" else 4096
+                    new_content = f"\n{detail}\n"
+                    current_size = target_file.stat().st_size if target_file.exists() else 0
+                    if target_file.exists():
+                        existing = target_file.read_text()
+                        if detail.strip() in existing:
+                            print(f"     ⏭  [{target_agent}] skip (already present)")
+                            continue
+                    if current_size + len(new_content) <= max_bytes:
+                        with open(target_file, "a") as f:
+                            f.write(new_content)
+                        total_actions += 1
+                        print(f"     ✅ [{target_agent}] {target_file.name}: +{len(new_content)}B")
+                    else:
+                        print(f"     ⚠️  [{target_agent}] {target_file.name} 超限, skipped")
+        else:
+            print(f"  ⚠️  No evaluation JSON found in EvolutionAgent response")
+
+        # Persist performance (rule-based)
+        try:
+            if store.load_run_performance(run_id) is None:
+                _persist_performance(store, run_id, goal,
+                    [r for r in conn.execute("SELECT DISTINCT role_id FROM decisions WHERE run_id=?", (run_id,)).fetchall()],
+                    None)
+        except Exception:
+            pass
+
+    print(f"\n{'='*60}")
+    print(f"🧬 Evolution complete: {len(unevaluated)} runs, {total_feedback} feedback entries, {total_actions} actions applied")
+    print(f"{'='*60}")
+    print(f"\n💡 Run debate --evolve to re-evaluate after new runs complete.\n")
 
 
 def main():
