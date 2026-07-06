@@ -1,38 +1,49 @@
 # Spec-Writer Skill
 
-基于 Hermes 内置 [speckit](https://hermes-agent.nousresearch.com/docs) 工具链的规格写作流程。
+基于 speckit-specify + speckit-clarify + speckit-plan + speckit-tasks + speckit-checklist 的规格写作流程。
 
 ## 执行顺序
 
 ### 1. speckit-specify — 编写功能规格
 
-从自然语言需求生成 `spec.md`。
+Input: 任务目标（从系统提示的"团队总目标"获取）。
 
-**关键规则**:
-- 聚焦 **WHAT** 和 **WHY**，不写 HOW
-- Success Criteria 必须可度量、技术无关
-- 最大 3 个 [NEEDS CLARIFICATION]
+流程：
+1. 解析目标：识别 actors、actions、data、constraints
+2. 不确定的方面：基于上下文合理推断，仅标记最多 3 个 [NEEDS CLARIFICATION]
+3. 填写 User Scenarios & Testing
+4. 生成 Functional Requirements（每条必须可测试）
+5. 定义 Success Criteria（可度量、技术无关）
 
-### 2. speckit-clarify — 澄清需求
+产出：`spec.md`
 
-如果 spec.md 有 [NEEDS CLARIFICATION]，消歧。
+**Quality Validation**：写完后自检 —
+- [ ] 无实现细节（语言/框架/API）
+- [ ] 聚焦用户价值和业务需求
+- [ ] 无不完整的 [NEEDS CLARIFICATION]
+- [ ] 需求可测试且无歧义
+- [ ] Success Criteria 可度量且技术无关
+- [ ] 边界情况已识别
 
-### 3. speckit-plan — 技术方案
+### 2. speckit-plan — 技术方案
 
-将 spec 转化为 `plan.md`：
-- 架构设计 + 组件职责
+产出 `plan.md`：
+- 技术选型 + 理由
+- 架构设计
+- 数据模型
 - 接口定义
-- 数据流
-- 技术选型理由
+- 实施阶段
 
-### 4. speckit-tasks — 任务分解
+### 3. speckit-tasks — 任务分解
 
-将 plan 分解为 `tasks.md`。每个任务：输入/输出/工时/依赖/验收标准。
+产出 `tasks.md`。格式：
+```
+- [ ] T001 描述 + 文件路径
+- [ ] T002 [P] 可并行任务 + 文件路径
+- [ ] T003 [US1] 关联用户故事 + 文件路径
+```
+按 Phase 组织：Setup → Foundational → User Stories → Polish
 
-### 5. speckit-checklist — 质量清单
-
-生成检查清单验证交付物完整性。
-
-## 完成信号
+### 完成信号
 
 所有文件产出后调用 **submit_decision(APPROVE)**。

@@ -1,36 +1,60 @@
 # Reviewer Skill
 
-基于 Hermes 内置 speckit-analyze 的代码审查流程。
+基于 speckit-analyze 的代码审查流程。**只读分析，不修改源文件。**
+
+## 前置条件
+
+`spec.md`, `plan.md`, `tasks.md`, 实现代码已产出。
 
 ## 流程
 
-### 1. 对照 spec 分析
+### 1. 加载上下文
 
-检查 spec.md 的 Functional Requirements 是否全部实现。
+```
+file_read spec.md
+file_read plan.md
+file_read tasks.md
+file_read implementation-report.md
+```
 
-### 2. 三向对比
+### 2. 交叉一致性分析（speckit-analyze）
 
-| 维度 | spec.md | plan.md | 实际代码 |
-|---|---|---|---|
-| 功能完整性 | FR 列表 | 方案对照 | 检查文件 |
-| 接口一致性 | 接口定义 | 方案对照 | grep 代码 |
-| 数据流 | 数据流图 | 方案对照 | trace 代码 |
+对比三个核心产物：spec.md ↔ plan.md ↔ 实现代码
 
-差异记录到 `review.md`。
+**检测维度**：
 
-### 3. 运行测试
+| 维度 | 检查方式 |
+|---|---|
+| Duplication | 重复/近似需求 → 标记合并 |
+| Ambiguity | "fast"/"scalable"/"secure" 等无度量标准词 → HIGH |
+| Underspecification | 需求缺可度量产出 → MEDIUM |
+| Coverage Gap | 需求→无对应任务 OR 任务→无对应需求 → CRITICAL |
+| Inconsistency | 术语不一致、数据实体漂移、任务顺序矛盾 → HIGH |
+
+### 3. 严重程度
+
+- **CRITICAL**：需求零覆盖 or 阻塞基线功能
+- **HIGH**：重复/冲突需求、模糊的安全属性
+- **MEDIUM**：术语漂移、无对应非功能任务
+- **LOW**：风格/措辞改进
+
+### 4. 运行测试
 
 ```bash
 python -m pytest tests/ -v
 ```
 
-### 4. 产出 `review.md`
+### 5. 产出 `review.md`
 
-- [ ] FR 实现状态
-- [ ] 对比差异表
-- [ ] 测试结果
-- [ ] 阻塞问题
+分析报告格式：
+```
+| ID | Category | Severity | Location | Summary | Recommendation |
+|---|---|---|---|---|---|
+| C1 | Coverage | HIGH | spec.md:L42 | "性能指标"无对应任务 | 添加 benchmark 任务 |
+```
+
+含：覆盖率摘要表、Constitution 对齐问题（如有）、Next Actions。
 
 ## 完成信号
 
-全部通过 → **APPROVE**。有阻塞 → **REQUEST_CHANGES** 并写明问题。
+无 CRITICAL 问题 → **APPROVE**。有阻塞 → **REQUEST_CHANGES**。
