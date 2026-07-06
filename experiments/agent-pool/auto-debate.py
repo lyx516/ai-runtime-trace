@@ -465,31 +465,25 @@ def _build_multi_turn_system_prompt(
         tool_descriptions.append(f"  {fn['name']}: {fn.get('description', '')[:100]}")
     tool_text = "\n".join(tool_descriptions) if tool_descriptions else "  (无)"
 
-    # Read assigned skill content — all .md files in the skill directory
+    # Read assigned skill METADATA — only names + descriptions, not full content
+    # Agents must call skill_load() to load full content on demand
     skill_content = ""
     _skill_dir = Path(__file__).resolve().parent / "shared" / "skills" / role_id
+    _skill_meta_parts = []
     if _skill_dir.is_dir():
-        _skill_parts = []
         for _sf in sorted(_skill_dir.glob("*.md")):
             with open(_sf, encoding="utf-8") as _f:
                 _raw = _f.read()
+            _desc = ""
             if _raw.startswith("---"):
-                _parts = _raw.split("---", 2)
-                _body = _parts[2].strip() if len(_parts) >= 3 else _raw
-            else:
-                _body = _raw
-            _skill_parts.append(f"## {_sf.stem}\n{_body}")
-        if _skill_parts:
-            skill_content = "\n\n".join(_skill_parts)
-    elif _skill_dir.with_suffix(".md").exists():
-        # Legacy: single SKILL.md file
-        with open(_skill_dir.with_suffix(".md"), encoding="utf-8") as _f:
-            _raw = _f.read()
-        if _raw.startswith("---"):
-            _parts = _raw.split("---", 2)
-            skill_content = _parts[2].strip() if len(_parts) >= 3 else _raw
-        else:
-            skill_content = _raw
+                _yparts = _raw.split("---", 2)
+                if len(_yparts) >= 3:
+                    import yaml as _y2
+                    _fm = _y2.safe_load(_yparts[1]) or {}
+                    _desc = _fm.get("description", "")[:120]
+            _skill_meta_parts.append(f"  skill_load('{_sf.stem}') — {_desc or _sf.stem}")
+    if _skill_meta_parts:
+        skill_content = "## 可用技能（调用 skill_load 加载完整内容）\n" + "\n".join(_skill_meta_parts)
 
     # Read trait-specific prompt
     from trait_loader import resolve_agent_trait_prompts
@@ -871,6 +865,26 @@ def _run_session_loop(
                         print(f"     💬 → {', '.join(send_to)}: {content[:60]}...")
                     tool_calls_made += 1
                     _empty_fails = 0
+                elif fn_name == "skill_load":
+                    _sn = fn_args.get("skill_name", "")
+                    _skill_dir = Path(__file__).resolve().parent / "shared" / "skills" / state.role_id
+                    _found = None
+                    if _skill_dir.is_dir():
+                        for _sf in _skill_dir.glob("*.md"):
+                            if _sf.stem == _sn:
+                                _found = _sf
+                                break
+                    if _found:
+                        _raw = _found.read_text(encoding="utf-8")
+                        _body = _raw
+                        if _raw.startswith("---"):
+                            _yparts = _raw.split("---", 2)
+                            _body = _yparts[2].strip() if len(_yparts) >= 3 else _raw
+                        result = {"ok": True, "skill": _sn, "content": _body[:8000]}
+                        print(f"     📚 skill_load({_sn}) → {_found.name} ({len(_body)}B)")
+                    else:
+                        result = {"ok": False, "error": f"skill '{_sn}' not found in {_skill_dir}"}
+                    tool_calls_made += 1
                 elif fn_name in ("memory_read", "memory_write", "skill_create", "skill_update",
                                  "agent_submit_decision", "agent_summarize", "human_clarifier"):
                     result = {"ok": True, "note": f"{fn_name} is available but not yet implemented"}

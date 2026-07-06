@@ -28,6 +28,7 @@ UNIVERSAL_TOOLS = {
     "skill_create",
     "skill_update",
     "agent_message_send",
+    "skill_load",
     "agent_submit_decision",
     "agent_summarize",
     "human_clarifier",
@@ -292,6 +293,20 @@ _UNIVERSAL_TOOL_SCHEMAS: dict[str, dict] = {
                 "content": {"type": "string", "description": "Message content."},
             },
             "required": ["recipients", "content"],
+        },
+    },
+    "skill_load": {
+        "name": "skill_load",
+        "description": "Load a skill file by name. Returns full skill content. Use when you need detailed guidance for a specific task.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "skill_name": {
+                    "type": "string",
+                    "description": "Skill file name (e.g. 'speckit-specify', 'speckit-implement').",
+                },
+            },
+            "required": ["skill_name"],
         },
     },
 }
