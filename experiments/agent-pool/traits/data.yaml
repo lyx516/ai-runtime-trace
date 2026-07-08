@@ -1,9 +1,0 @@
-# data — 数据分析能力
-trait_id: data
-name: 数据分析
-description: 使用 pandas 分析数据
-tools_allowed:
-  - data_analyze
-prompt_segment: |
-  - 分析结果要给出明确的结论和可操作的洞察
-  - 优先用图表描述趋势

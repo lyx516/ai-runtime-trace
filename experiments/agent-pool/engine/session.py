@@ -107,7 +107,7 @@ def _build_multi_turn_system_prompt(
             "## 工作方式",
             "1. 分析目标，明确要产出的内容",
             "2. 用 write_file 创建产物文件，用 patch 修改已有文件",
-            "3. 完成后调用 submit_decision(APPROVE)",
+            "3. 完成后调用 submit_decision(APPROVE)。分配给其他角色的验证/审查/测试不属于你的职责范围",
             "",
         ])
 
@@ -117,6 +117,10 @@ def _build_multi_turn_system_prompt(
     parts.extend([
         "## 可用工具",
         tool_text,
+        "",
+        "## 持久记忆",
+        "- memory_read(key): 读取你之前存的经验",
+        "- memory_write(key, value): 存储本次学到的经验，下次 run 可复用",
         "",
         "## 完成条件",
         "产出文件后，调用 **submit_decision** 提交。",
@@ -163,7 +167,7 @@ def _init_agent_session_state(
     if history:
         hist_lines = []
         for d in history[-10:]:
-            c = str(d.get("content", ""))[:200]
+            c = str(d["content"] or "")[:200]
             hist_lines.append(f"{d['from_role']}: {c}")
         messages.append({
             "role": "user",
@@ -175,6 +179,16 @@ def _init_agent_session_state(
             "role": "user",
             "content": f"## 收件箱 ({len(inbox)} 条消息)\n" + "\n".join(inbox_lines),
         })
+
+    # Auto-inject persisted memory for this agent
+    try:
+        from hermes_flow.memory import MemoryStore
+        _mem = MemoryStore().list_keys(role_id)
+        if _mem:
+            _mem_lines = [f"- {e['key']}: {e['value'][:150]}" for e in _mem[-10:]]
+            messages.append({"role": "user", "content": "## 你的持久记忆\n" + "\n".join(_mem_lines)})
+    except Exception:
+        pass
 
     # Inject pending decisions from this state (REQUEST_CHANGES reasons)
     if store is not None:
@@ -610,11 +624,23 @@ def _run_session_loop(
                         result = {"ok": True, "skill": _sn, "content": _body[:8000]}
                         print(f"     📚 skill_load({_sn}) → {_found.name} ({len(_body)}B)")
                     else:
-                        result = {"ok": False, "error": f"skill '{_sn}' not found in {_skill_dir}"}
+                        result = {"ok": False, "error": f"skill '{_sn}' not found in shared/skills/"}
                     tool_calls_made += 1
                 elif fn_name == "agent_recall":
                     result = _handle_agent_recall(fn_args, store, run_id)
                     print(f"     🧠 recall({fn_args.get('query','?')}, agent={fn_args.get('agent','-')}, state={fn_args.get('state','-')})")
+                    tool_calls_made += 1
+                elif fn_name == "memory_read":
+                    from hermes_flow.memory import MemoryStore
+                    _mval = MemoryStore().read(state.role_id, fn_args.get("key", ""))
+                    result = {"ok": True, "value": _mval}
+                    print(f"     📖 memory_read({fn_args.get('key','?')}) → {'found' if _mval else 'empty'}")
+                    tool_calls_made += 1
+                elif fn_name == "memory_write":
+                    from hermes_flow.memory import MemoryStore
+                    MemoryStore().write(state.role_id, fn_args.get("key", ""), fn_args.get("value", ""), run_id)
+                    result = {"ok": True}
+                    print(f"     💾 memory_write({fn_args.get('key','?')})")
                     tool_calls_made += 1
                 elif fn_name == "clarify":
                     question = fn_args.get("question", "?")
@@ -627,10 +653,6 @@ def _run_session_loop(
                         tool_calls_made += 1
                         result = {"ok": True, "answer": answer, "question": question}
                         print(f"       → {answer[:80]}")
-                elif fn_name in ("memory_read", "memory_write", "skill_create", "skill_update",
-                                 "agent_submit_decision", "agent_summarize", "human_clarifier"):
-                    result = {"ok": True, "note": f"{fn_name} is available but not yet implemented"}
-                    tool_calls_made += 1
                 else:
                     print(f"     🔧 {fn_name}({json.dumps(fn_args, ensure_ascii=False)[:80]})", end="")
                     result = execute_tool(fn_name, fn_args, state.role_id)

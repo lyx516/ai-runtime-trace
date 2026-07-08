@@ -1,3 +1,20 @@
+SCHEMA = {
+  "name": "code_exec",
+  "description": "Execute a Python script in an isolated environment. The script can use the Python standard library. Use for data processing, computation, or file manipulation.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "code": {
+        "type": "string",
+        "description": "Python code to execute."
+      }
+    },
+    "required": [
+      "code"
+    ]
+  }
+}
+
 """Code execution tool — runs Python in a sandboxed subprocess.
 
 Sandbox:
@@ -42,6 +59,12 @@ def run(args: dict) -> dict:
                      "Provide the Python code to execute. Do not retry with empty code.",
         }
 
+    # ── Code blacklist ──
+    from tools._security import check_code_blocked
+    blocked = check_code_blocked(code)
+    if blocked:
+        return {"ok": False, "error": f"code_exec: {blocked}"}
+
     from tools._scope import get_workspace_root
 
     ws_root = str(get_workspace_root())
@@ -50,6 +73,10 @@ def run(args: dict) -> dict:
     env["HOME"] = ws_root
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PATH"] = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    # Inject scope env vars so scope-aware code inside code_exec respects boundaries
+    env["HERMES_WORKSPACE_ROOT"] = ws_root
+    env["HERMES_WRITE_SCOPE"] = os.environ.get("HERMES_WRITE_SCOPE", "")
+    env["HERMES_READ_SCOPE"] = os.environ.get("HERMES_READ_SCOPE", "")
 
     tmp = ""
     try:

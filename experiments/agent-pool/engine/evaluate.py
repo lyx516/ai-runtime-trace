@@ -22,7 +22,7 @@ def persist_performance(store, run_id: str, goal: str, agent_ids: list[str],
     conn = store.connect()
 
     tool_rows = conn.execute(
-        "SELECT step_type FROM thinking_events WHERE run_id=? AND step_type NOT IN ('submit_decision','memory_read','memory_write')",
+        "SELECT step_type FROM thinking_events WHERE run_id=? AND step_type NOT IN ('submit_decision')",
         (run_id,),
     ).fetchall()
     tool_calls: dict[str, int] = {}

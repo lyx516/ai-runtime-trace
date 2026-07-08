@@ -1,3 +1,28 @@
+SCHEMA = {
+  "name": "terminal",
+  "description": "Execute a shell command. Use for system operations — mkdir, mv, cp, git, pip install, etc.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "command": {
+        "type": "string",
+        "description": "Shell command to execute."
+      },
+      "workdir": {
+        "type": "string",
+        "description": "Working directory for the command."
+      },
+      "timeout": {
+        "type": "integer",
+        "description": "Max execution time in seconds."
+      }
+    },
+    "required": [
+      "command"
+    ]
+  }
+}
+
 """Terminal command execution — sandboxed to WORKSPACE_ROOT + write_scope.
 
 All commands run with:
@@ -5,6 +30,7 @@ All commands run with:
 - HOME set to workspace root (so ~/ expands in-scope)
 - SENSITIVE env vars stripped (*_API_KEY, *_TOKEN, *_SECRET, etc.)
 - PATH sanitized to a minimal safe set
+- Dangerous commands blocked (rm -rf /, sudo, mkfs, dd, chmod 777, etc.)
 """
 
 import os
@@ -43,6 +69,12 @@ def run(args: dict) -> dict:
                      "Provide the 'command' argument with a valid shell command. "
                      "Do not retry this call with an empty command.",
         }
+
+    # ── Command blacklist ──
+    from tools._security import check_command_blocked
+    blocked = check_command_blocked(command)
+    if blocked:
+        return {"ok": False, "error": f"terminal: {blocked}"}
 
     # ── Resolve and scope workdir ──
     from tools._scope import resolve_write_path, get_workspace_root

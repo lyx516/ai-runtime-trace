@@ -45,30 +45,24 @@ flow:
     max: 3
   output_artifacts:
   - tasks.md
-# ── IMPLEMENT: implementer 写代码+报告，code-reviewer 审查 ──
+# ── IMPLEMENT: implementer 写代码，code-reviewer 审查 ──
 - state: IMPLEMENT
-  description: 编写实现代码和报告（由 code-reviewer 审查）。注意：代码写完后最后写 README.md。
+  description: 编写实现代码（由 code-reviewer 审查）
   actors: implementer+code-reviewer
   gate:
-    type: product
-    file: README.md
+    type: decision
     pass: REVIEW
     fail: IMPLEMENT
     max: 4
-  output_artifacts:
-  - README.md
 # ── REVIEW: code-reviewer 写最终审查报告 ──
 - state: REVIEW
   description: 最终审查报告
   actors: code-reviewer
   gate:
-    type: product
-    file: review.md
+    type: decision
     pass: DONE
     fail: IMPLEMENT
-    max: 2
-  output_artifacts:
-  - review.md
+    max: 3
 ---
 
 # 规格流水线班底

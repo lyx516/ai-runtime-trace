@@ -123,41 +123,9 @@ def evolve():
     # Load agent pool (for agent_id info + model resolution)
     agents = load_agents()
 
-    # Build EvolutionAgent's tool schemas
-    from tool_registry import DECISION_TOOL_SCHEMA
-    evo_tool_schemas = [DECISION_TOOL_SCHEMA]
-    agent_recall_schema = {
-        "type": "function",
-        "function": {
-            "name": "agent_recall",
-            "description": "Recall runtime data from the run SQLite.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "enum": ["overview", "transitions", "decisions", "thinking", "messages"]},
-                    "agent": {"type": "string"},
-                    "state": {"type": "string"},
-                    "limit": {"type": "integer"},
-                    "offset": {"type": "integer"},
-                },
-                "required": ["query"],
-            },
-        },
-    }
-    evo_tool_schemas.append(agent_recall_schema)
-    skill_load_schema = {
-        "type": "function",
-        "function": {
-            "name": "skill_load",
-            "description": "Load the evaluate-flow skill.",
-            "parameters": {
-                "type": "object",
-                "properties": {"skill_name": {"type": "string"}},
-                "required": ["skill_name"],
-            },
-        },
-    }
-    evo_tool_schemas.append(skill_load_schema)
+    # Build EvolutionAgent's tool schemas — use the unified registry
+    from tool_registry import get_agent_tools_schemas, DECISION_TOOL_SCHEMA
+    evo_tool_schemas = get_agent_tools_schemas("evolution-agent") + [DECISION_TOOL_SCHEMA]
 
     total_feedback = 0
     total_actions = 0
@@ -213,7 +181,8 @@ JSON 格式：
         print(f"  🤖 EvolutionAgent investigating...")
         reset_bus()
         make_hook_handlers(store, run_id)
-        session_result = _run_session_loop(state, store, run_id, agents)
+        session_result = _run_session_loop(state, store, run_id, agents,
+                                  clarify_fn=lambda q, c: "")
         print(f"  ✅ Evaluation complete: {session_result.get('value', '?')}")
 
         conn = store.connect()

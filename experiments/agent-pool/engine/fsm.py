@@ -183,9 +183,21 @@ def _run_fsm_loop(store, run_id: str, goal: str, agent_ids: list[str], agents: d
             tool_count = result.get("tool_calls", 0)
             print(f"     ✅ {val} (after {tool_count} tool call(s))")
 
+            # Auto-capture to persistent memory (fixed key per state, overwrites — no bloat)
+            if tool_count > 0:
+                try:
+                    from hermes_flow.memory import MemoryStore
+                    MemoryStore().write(role_id, f"learn:{state_id}", f"{val}: {reason[:200]}", run_id)
+                except Exception:
+                    pass
+
+            # If agent returned a decision but didn't call submit_decision (0 tool calls),
+            # always record it so evaluate_gate sees the latest decision
+            if tool_count == 0 and val in ("APPROVE", "REQUEST_CHANGES", "BLOCKED"):
+                from hermes_flow.tools import flow_decide
+                flow_decide(run_id, state_id, role_id, val, reason)
+
             # Product gate: if artifact is invalid, override the agent's decision.
-            # The hook already recorded the agent's original decision via flow_decide;
-            # here we UPDATE it in-place rather than appending a second row.
             output_artifacts = state_dict.get("output_artifacts", [])
             if output_artifacts:
                 for art_name in output_artifacts:
@@ -205,21 +217,23 @@ def _run_fsm_loop(store, run_id: str, goal: str, agent_ids: list[str], agents: d
                         )
                         conn.commit()
 
-            if val in fail_vals:
-                break
-
+        # ── All roles have run in this round — now evaluate gate ──
         r3 = flow_step(run_id)
         if r3.get("ok"):
             print(f"  → {r3.get('from_state')} → {r3.get('to_state')}")
             # Self-loop termination: all roles must have passed, not just decided
             if r3.get("from_state") and r3.get("from_state") == r3.get("to_state"):
                 _pass_vals = gate.get("pass_values", ["APPROVE"])
+                _rows = {}
+                for _r in required_roles:
+                    _row = store.connect().execute(
+                        "SELECT value FROM decisions WHERE run_id=? AND state_id=? AND role_id=? ORDER BY created_at DESC LIMIT 1",
+                        (run_id, r3["from_state"], _r),
+                    ).fetchone()
+                    _rows[_r] = dict(_row).get("value", "") if _row else ""
                 _all_approved = all(
                     store.agent_has_decision(run_id, r3["from_state"], r)
-                    and (store.conn.execute(
-                        "SELECT value FROM decisions WHERE run_id=? AND state_id=? AND role_id=? ORDER BY created_at DESC LIMIT 1",
-                        (run_id, r3["from_state"], r),
-                    ).fetchone() or {}).get("value", "") in _pass_vals
+                    and _rows.get(r, "") in _pass_vals
                     for r in required_roles
                 )
                 if _all_approved:

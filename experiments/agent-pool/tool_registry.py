@@ -23,17 +23,10 @@ AGENTS_DIR = _MODULE_DIR / "agents"
 
 # Universal tools available to all agents (not in meta.yaml's tools_allowed)
 UNIVERSAL_TOOLS = {
-    "memory_read",
-    "memory_write",
-    "skill_create",
-    "skill_update",
     "agent_message_send",
     "skill_load",
-    "agent_recall",
-    "agent_submit_decision",
-    "agent_summarize",
-    "human_clarifier",
-    "clarify",
+    "memory_read",
+    "memory_write",
 }
 
 # ── Per-tool max result size (chars) before truncation ─────────────────
@@ -51,236 +44,19 @@ _DEFAULT_MAX_RESULT_CHARS = 2_000
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  Hand-crafted tool schemas (inspired by Hermes Agent)
+#  Hand-crafted tool schemas — each tool module exports its own SCHEMA
 # ═══════════════════════════════════════════════════════════════════════
 
-_HAND_CRAFTED_SCHEMAS: dict[str, dict] = {
-    # ── write_file ─────────────────────────────────────────────────────
-    "write_file": {
-        "name": "write_file",
-        "description": (
-            "Create a new file or completely overwrite an existing file. "
-            "Creates parent directories automatically. Both 'path' and 'content' are REQUIRED. "
-            "Use this for creating deliverable files (spec.md, plan.md, tasks.md, etc.). "
-            "For editing existing files, use the 'patch' tool instead."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "File path relative to workspace. Example: 'output/auto-xxx/spec.md'",
-                },
-                "content": {
-                    "type": "string",
-                    "description": "Complete file content as a string.",
-                },
-            },
-            "required": ["path", "content"],
-        },
-    },
-    # ── file_read ───────────────────────────────────────────────────────
-    "file_read": {
-        "name": "file_read",
-        "description": (
-            "Read a text file with line numbers and pagination. "
-            "Use offset and limit for large files."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "File path relative to workspace.",
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Line number to start reading from (1-indexed, default: 0).",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of lines to read (default: 50, max: 500).",
-                },
-            },
-            "required": ["path"],
-        },
-    },
-    # ── patch ───────────────────────────────────────────────────────────
-    "patch": {
-        "name": "patch",
-        "description": (
-            "Edit existing files with targeted find-and-replace. "
-            "mode='replace': find old_string in a file and replace with new_string. "
-            "Requires path, old_string, new_string. "
-            "mode='patch': apply a V4A multi-file batch edit. "
-            "To CREATE a new file, use write_file instead."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "mode": {
-                    "type": "string",
-                    "enum": ["replace", "patch"],
-                    "description": "'replace' for single-file edit, 'patch' for V4A multi-file batch.",
-                },
-                "path": {
-                    "type": "string",
-                    "description": "File path. Required for replace mode.",
-                },
-                "old_string": {
-                    "type": "string",
-                    "description": "Text to find. Required for replace mode.",
-                },
-                "new_string": {
-                    "type": "string",
-                    "description": "Replacement text. Required for replace mode.",
-                },
-                "patch": {
-                    "type": "string",
-                    "description": "V4A patch content. Required for patch mode.",
-                },
-                "replace_all": {
-                    "type": "boolean",
-                    "description": "Replace all occurrences. Default: false.",
-                },
-            },
-            "required": ["mode"],
-        },
-    },
-    # ── search_files ────────────────────────────────────────────────────
-    "search_files": {
-        "name": "search_files",
-        "description": (
-            "Search file contents (grep) or find files by name. "
-            "Use type='content' to search inside files, type='files' to list filenames."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "type": {
-                    "type": "string",
-                    "enum": ["content", "files"],
-                    "description": "'content' to grep, 'files' to list filenames.",
-                },
-                "pattern": {
-                    "type": "string",
-                    "description": "Search pattern — regex for content, glob for files.",
-                },
-                "path": {
-                    "type": "string",
-                    "description": "Directory to search in (default: current directory).",
-                },
-                "file_glob": {
-                    "type": "string",
-                    "description": "Filter files by extension pattern, e.g. '*.py'.",
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Skip first N results (default: 0).",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum results to return (default: 50, max: 200).",
-                },
-                "context": {
-                    "type": "integer",
-                    "description": "Lines of context around matches (default: 0).",
-                },
-            },
-            "required": ["pattern"],
-        },
-    },
-    # ── web_search ──────────────────────────────────────────────────────
-    "web_search": {
-        "name": "web_search",
-        "description": (
-            "Search the web for information. Use curl to fetch search results. "
-            "Returns a summary of top results. Use for research and fact-checking."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Search query string.",
-                },
-            },
-            "required": ["query"],
-        },
-    },
-    # ── code_exec ───────────────────────────────────────────────────────
-    "code_exec": {
-        "name": "code_exec",
-        "description": (
-            "Execute a Python script in an isolated environment. "
-            "The script can use the Python standard library. "
-            "Use for data processing, computation, or file manipulation."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "code": {
-                    "type": "string",
-                    "description": "Python code to execute.",
-                },
-            },
-            "required": ["code"],
-        },
-    },
-    # ── terminal ────────────────────────────────────────────────────────
-    "terminal": {
-        "name": "terminal",
-        "description": (
-            "Execute a shell command. Use for system operations — "
-            "mkdir, mv, cp, git, pip install, etc."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "Shell command to execute.",
-                },
-                "workdir": {
-                    "type": "string",
-                    "description": "Working directory for the command.",
-                },
-                "timeout": {
-                    "type": "integer",
-                    "description": "Max execution time in seconds.",
-                },
-            },
-            "required": ["command"],
-        },
-    },
-}
+# _HAND_CRAFTED_SCHEMAS removed. Each tool/<id>/__init__.py now exports
+# a module-level SCHEMA dict (OpenAI function-calling format).
+# Tool schemas are auto-discovered via discover_all_tools().
+# Universal tool schemas (memory, skill, message) remain in _UNIVERSAL_TOOL_SCHEMAS.
+
+_EMPTY = {}
 
 # ── Universal tool schemas ─────────────────────────────────────────────
 
 _UNIVERSAL_TOOL_SCHEMAS: dict[str, dict] = {
-    "memory_read": {
-        "name": "memory_read",
-        "description": "Read agent's persistent memory (key-value store). Use to recall context from previous sessions.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "key": {"type": "string", "description": "Memory key to read."},
-            },
-            "required": ["key"],
-        },
-    },
-    "memory_write": {
-        "name": "memory_write",
-        "description": "Write a value to agent's persistent memory.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "key": {"type": "string", "description": "Memory key."},
-                "value": {"type": "string", "description": "Value to store."},
-            },
-            "required": ["key", "value"],
-        },
-    },
     "agent_message_send": {
         "name": "agent_message_send",
         "description": "Send a message to another agent. Use for collaboration and clarification.",
@@ -309,69 +85,6 @@ _UNIVERSAL_TOOL_SCHEMAS: dict[str, dict] = {
                 },
             },
             "required": ["skill_name"],
-        },
-    },
-    "agent_recall": {
-        "name": "agent_recall",
-        "description": (
-            "Recall runtime data from a flow run's SQLite database — "
-            "decisions, tool usage, state transitions, and agent messages. "
-            "Pure SQLite reads — no LLM processing, returns raw data.\n\n"
-            "FIVE CALLING SHAPES (inferred from query parameter):\n\n"
-            "  OVERVIEW — agent_recall(query=\"overview\"): run status, agents, state/decision/msg counts.\n"
-            "  TRANSITIONS — agent_recall(query=\"transitions\"): state path with retry detection.\n"
-            "  DECISIONS — agent_recall(query=\"decisions\", agent=\"x\"): who approved/rejected what.\n"
-            "  THINKING — agent_recall(query=\"thinking\", agent=\"x\", limit=20, offset=0): tool call log with pagination.\n"
-            "  MESSAGES — agent_recall(query=\"messages\", state=\"IMPLEMENT\"): agent-to-agent messages.\n\n"
-            "PAGINATION: when has_more=true, use offset + limit for next page. "
-            "Use to investigate agent behavior BEFORE making judgments."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "enum": ["overview", "transitions", "decisions", "thinking", "messages"],
-                    "description": "What data to recall.",
-                },
-                "agent": {
-                    "type": "string",
-                    "description": "Filter by agent_id (e.g. 'implementer').",
-                },
-                "state": {
-                    "type": "string",
-                    "description": "Filter by state_id (e.g. 'IMPLEMENT').",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Rows per page (default 20, max 50).",
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Row offset for pagination (default 0).",
-                },
-            },
-            "required": ["query"],
-        },
-    },
-    "clarify": {
-        "name": "clarify",
-        "description": "Pause and ask the human for input. Use when you need a decision, preference, or clarification before proceeding. The flow will wait for a response.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "question": {
-                    "type": "string",
-                    "description": "The question to ask the human.",
-                },
-                "choices": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "maxItems": 4,
-                    "description": "Optional multiple-choice options. Omit for open-ended input.",
-                },
-            },
-            "required": ["question"],
         },
     },
 }
@@ -416,12 +129,14 @@ DECISION_TOOL_SCHEMA = {
 def build_tool_schema(tool_id: str, tool_info: dict) -> dict:
     """Return an OpenAI-format tool schema for *tool_id*.
 
-    Prefers hand-crafted schemas; falls back to a minimal auto-generated
-    schema when the tool does not have a hand-crafted entry.
+    1. Prefers SCHEMA from the tool's __init__.py (auto-discovered).
+    2. Falls back to _UNIVERSAL_TOOL_SCHEMAS for built-in universal tools.
+    3. Falls back to a minimal auto-generated schema from the run() signature.
     """
-    # Hand-crafted schema
-    if tool_id in _HAND_CRAFTED_SCHEMAS:
-        return {"type": "function", "function": _HAND_CRAFTED_SCHEMAS[tool_id]}
+    # SCHEMA from tool module (auto-discovered)
+    schema = tool_info.get("SCHEMA")
+    if schema is not None:
+        return {"type": "function", "function": schema}
 
     # Universal tools with hand-crafted schemas
     if tool_id in _UNIVERSAL_TOOL_SCHEMAS:
@@ -500,10 +215,12 @@ def discover_all_tools() -> dict[str, dict]:
         if run_fn is None:
             continue
         doc = (mod.__doc__ or "").strip()
+        schema = getattr(mod, "SCHEMA", None)
         tools[tool_id] = {
             "module": mod,
             "run_fn": run_fn,
             "doc": doc,
+            "SCHEMA": schema,
             "tool_id": tool_id,
         }
     return tools
@@ -534,10 +251,10 @@ def get_agent_tools_schemas(agent_id: str) -> list[dict]:
     schemas = []
     # Universal tools — send schema even without a tool module directory
     for uid in sorted(UNIVERSAL_TOOLS):
-        if uid in _UNIVERSAL_TOOL_SCHEMAS:
-            schemas.append({"type": "function", "function": _UNIVERSAL_TOOL_SCHEMAS[uid]})
-        elif uid in all_tools:
+        if uid in all_tools:
             schemas.append(build_tool_schema(uid, all_tools[uid]))
+        elif uid in _UNIVERSAL_TOOL_SCHEMAS:
+            schemas.append({"type": "function", "function": _UNIVERSAL_TOOL_SCHEMAS[uid]})
     for tool_id in sorted(allowed_set):
         if tool_id in all_tools:
             schemas.append(build_tool_schema(tool_id, all_tools[tool_id]))
