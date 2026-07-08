@@ -10,6 +10,106 @@ per-agent scores + run_score) and writes run_performance to SQLite.
 
 from __future__ import annotations
 
+import json
+
+
+def capture_run_metrics(store, run_id: str, goal: str, agent_ids: list[str]) -> dict:
+    """Post-run metric capture: aggregate per-state tool_calls, decisions, time.
+
+    Called from _run_fsm_loop on every normal exit (completed or aborted).
+    Writes run_performance with real SQLite-aggregated data.
+    Returns the same dict for inline use.
+    """
+    conn = store.connect()
+
+    # Status / outcome
+    row = conn.execute("SELECT status, current_state_id FROM runs WHERE run_id=?", (run_id,)).fetchone()
+    if not row:
+        return {}
+    outcome = f"{row['status']}@{row['current_state_id']}"
+
+    # Per-state tool calls
+    by_state: dict[str, dict] = {}
+    rows = conn.execute(
+        "SELECT state_id, role_id, COUNT(*) as cnt FROM thinking_events "
+        "WHERE run_id=? AND step_type NOT IN ('llm_call','submit_decision','agent_message_send') "
+        "GROUP BY state_id, role_id ORDER BY state_id",
+        (run_id,),
+    ).fetchall()
+    for r in rows:
+        sid = r["state_id"]
+        if sid not in by_state:
+            by_state[sid] = {}
+        by_state[sid][r["role_id"]] = r["cnt"]
+    per_state = {}
+    for sid, roles in by_state.items():
+        per_state[sid] = {"total": sum(roles.values()), "by_role": dict(roles)}
+
+    # Per-state decision counts
+    dec_rows = conn.execute(
+        "SELECT state_id, COUNT(*) as cnt FROM decisions WHERE run_id=? GROUP BY state_id",
+        (run_id,),
+    ).fetchall()
+    decisions = {}
+    for r in dec_rows:
+        decisions[r["state_id"]] = r["cnt"]
+
+    # Transitions count
+    trans_cnt = conn.execute(
+        "SELECT COUNT(*) as c FROM transitions WHERE run_id=?", (run_id,),
+    ).fetchone()["c"]
+
+    # Messages count
+    msg_cnt = conn.execute(
+        "SELECT COUNT(*) as c FROM messages WHERE run_id=?", (run_id,),
+    ).fetchone()["c"]
+
+    # Total runtime in seconds
+    times = conn.execute(
+        "SELECT min(created_at) as first_ts, max(created_at) as last_ts FROM thinking_events WHERE run_id=?",
+        (run_id,),
+    ).fetchone()
+
+    def _parse_ts(s):
+        if not s:
+            return None
+        import datetime as dt
+        return dt.datetime.fromisoformat(s)
+
+    t1 = _parse_ts(times["first_ts"]) if times else None
+    t2 = _parse_ts(times["last_ts"]) if times else None
+    total_seconds = (t2 - t1).total_seconds() if t1 and t2 else 0
+
+    tool_stats = {
+        "outcome": outcome,
+        "total_seconds": round(total_seconds, 1),
+        "by_state": per_state,
+        "decisions": decisions,
+        "transitions": trans_cnt,
+        "messages": msg_cnt,
+    }
+
+    # Write to run_performance table
+    conn.execute(
+        "INSERT OR REPLACE INTO run_performance "
+        "(run_id, success_score, summary, agent_scores, bottleneck_state, "
+        " tool_stats, suggestions, evaluated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            run_id,
+            85 if row["status"] == "completed" else 40,
+            f"Task: {goal[:100]}. {outcome}. {sum(d['total'] for d in per_state.values())} tool calls.",
+            json.dumps({}),
+            max(per_state, key=lambda k: per_state[k]["total"]) if per_state else "?",
+            json.dumps(tool_stats),
+            "",
+            "",  # evaluated_at is set by save_run_performance, but INSERT OR REPLACE needs it
+        ),
+    )
+    conn.commit()
+    print(f"  📊 Metrics: outcome={outcome} states={list(per_state.keys())} runtime={total_seconds:.0f}s")
+    return tool_stats
+
 
 def persist_performance(store, run_id: str, goal: str, agent_ids: list[str],
                         eval_result: dict | None):

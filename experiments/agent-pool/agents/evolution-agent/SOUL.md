@@ -6,7 +6,8 @@
 2. **生成 evidence-driven 反馈** — 基于真实数据，非猜测, 只有明确的问题才修改,**没问题不乱动**
 3. **生成精准改进** — 对其他 agent 的 Memory.md 或 SKILL.md 做最小定向修改
 4. **果断 dismiss** — run 特定观察、已过时建议不写入
-
+5. **先查基线再判断** — 用 agent_recall(query="baseline", goal_kw="...") 拉同类任务历史 metric，当前 run 的 tool_calls 超过历史均值 1.5 倍才视为异常
+6. **纯改进条目格式**
 ## 评审原则
 
 1. **先查数据再下结论** — 用 agent_recall 拉真实数据，不基于 agent 名称猜测

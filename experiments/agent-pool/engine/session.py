@@ -419,8 +419,43 @@ def _handle_agent_recall(fn_args: dict, store, run_id: str) -> dict:
             return {"ok": True, "query": "messages", "results": results, "count": len(results),
                     "has_more": has_more, "offset": offset, "limit": limit}
 
+        elif query == "baseline":
+            kw = fn_args.get("goal_kw", "")
+            like = f"%{kw}%" if kw else "%"
+            rows = conn.execute(
+                "SELECT run_id, summary, success_score, tool_stats, created_at "
+                "FROM run_performance WHERE summary LIKE ? ORDER BY created_at DESC LIMIT 20",
+                (like,),
+            ).fetchall()
+            if not rows:
+                return {"ok": True, "query": "baseline", "results": [], "message": "No baseline data yet. Run a few debates first."}
+            import json as _json
+            stats = []
+            avg_seconds = 0.0
+            avg_calls = 0.0
+            for r in rows:
+                ts = _json.loads(r["tool_stats"] or "{}")
+                stats.append({
+                    "run_id": r["run_id"][:12],
+                    "outcome": ts.get("outcome", "?"),
+                    "total_seconds": ts.get("total_seconds", 0),
+                    "by_state": ts.get("by_state", {}),
+                })
+                avg_seconds += ts.get("total_seconds", 0)
+                avg_calls += sum(
+                    d.get("total", 0) for d in ts.get("by_state", {}).values()
+                )
+            n = len(stats)
+            return {
+                "ok": True, "query": "baseline", "results": stats,
+                "avg_total_seconds": round(avg_seconds / n, 1) if n else 0,
+                "avg_tool_calls": round(avg_calls / n, 1) if n else 0,
+                "count": n,
+                "message": f"Baseline from {n} runs matching '{kw or 'all'}'. avg runtime={avg_seconds/n:.0f}s, avg tool_calls={avg_calls/n:.0f}." if n else "No baseline data.",
+            }
+
         else:
-            return {"ok": False, "error": f"Unknown recall query: '{query}'. Valid: overview, transitions, decisions, thinking, messages"}
+            return {"ok": False, "error": f"Unknown recall query: '{query}'. Valid: overview, transitions, decisions, thinking, messages, baseline"}
 
     except Exception as e:
         return {"ok": False, "error": f"recall failed: {e}"}

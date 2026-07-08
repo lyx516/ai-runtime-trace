@@ -246,6 +246,8 @@ def _run_fsm_loop(store, run_id: str, goal: str, agent_ids: list[str], agents: d
             break
 
     # Final report
+    from engine.evaluate import capture_run_metrics
+    capture_run_metrics(store, run_id, goal, agent_ids)
     trans = conn.execute("SELECT from_state_id, to_state_id FROM transitions ORDER BY rowid").fetchall()
     msgs = conn.execute("SELECT from_role, substr(content,1,60) FROM messages ORDER BY rowid").fetchall()
     decs = conn.execute("SELECT state_id, role_id, value FROM decisions ORDER BY rowid").fetchall()
