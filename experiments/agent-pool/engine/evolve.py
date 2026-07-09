@@ -164,6 +164,7 @@ def evolve():
 - value 设为 APPROVE（完成）或 REQUEST_CHANGES（数据不足需更多调查）
 
 JSON 格式：
+{{"feedback":[{{"agent_id":"x","category":"memory|skill|tool","suggestion":"...","evidence":"..."}}],"evolution_actions":[{{"type":"update_memory|update_skill|dismiss","agent_id":"x","detail":"- 纯改进条目"}},{{"type":"patch_framework","target_file":"experiments/agent-pool/engine/session.py","old_string":"精确原文","new_string":"替换后文本","patch_summary":"改动摘要"}},{{"type":"revert_framework","backup_id":123,"target_file":"experiments/agent-pool/engine/session.py"}}]}}
 
 无改进时 feedback 和 evolution_actions 均用空数组 []。"""
 
