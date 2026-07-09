@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 from typing import Any, Optional
 
 PROJECT_ROOT_PATH = Path(__file__).resolve().parent.parent.parent.parent  # ai-runtime-trace/
@@ -265,7 +266,6 @@ JSON 格式：
                     assert new_content != original, "replace didn't change content"
                     abs_path.write_text(new_content)
                     # Pytest gate
-                    import subprocess
                     result = subprocess.run(
                         [str(PROJECT_ROOT_PATH / ".venv" / "bin" / "python"), "-m", "pytest",
                          str(PROJECT_ROOT_PATH / "tests" / "hermes_flow"), "-q"],

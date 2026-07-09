@@ -423,12 +423,12 @@ def _handle_agent_recall(fn_args: dict, store, run_id: str) -> dict:
             kw = fn_args.get("goal_kw", "")
             like = f"%{kw}%" if kw else "%"
             rows = conn.execute(
-                "SELECT run_id, summary, success_score, tool_stats, created_at "
-                "FROM run_performance WHERE summary LIKE ? ORDER BY created_at DESC LIMIT 20",
+                "SELECT run_id, summary, success_score, tool_stats, evaluated_at "
+                "FROM run_performance WHERE summary LIKE ? AND success_score >= 40 ORDER BY evaluated_at DESC LIMIT 5",
                 (like,),
             ).fetchall()
             if not rows:
-                return {"ok": True, "query": "baseline", "results": [], "message": "No baseline data yet. Run a few debates first."}
+                return {"ok": True, "query": "baseline", "results": [], "message": "No completed runs with baseline data yet."}
             import json as _json
             stats = []
             avg_seconds = 0.0
@@ -451,8 +451,9 @@ def _handle_agent_recall(fn_args: dict, store, run_id: str) -> dict:
                 "avg_total_seconds": round(avg_seconds / n, 1) if n else 0,
                 "avg_tool_calls": round(avg_calls / n, 1) if n else 0,
                 "count": n,
-                "message": f"Baseline from {n} runs matching '{kw or 'all'}'. avg runtime={avg_seconds/n:.0f}s, avg tool_calls={avg_calls/n:.0f}." if n else "No baseline data.",
+                "message": f"Baseline from {n} completed runs. avg runtime={avg_seconds/n:.0f}s, avg tool_calls={avg_calls/n:.0f}.",
             }
+
 
         else:
             return {"ok": False, "error": f"Unknown recall query: '{query}'. Valid: overview, transitions, decisions, thinking, messages, baseline"}
