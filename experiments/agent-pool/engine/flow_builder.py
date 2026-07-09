@@ -358,6 +358,24 @@ def generate_yaml(goal: str, agent_ids: list[str], run_name: str, agents: dict,
     yaml_data["initial_state_id"] = order[0] if order else "DONE"
     yaml_data["states"] = {s: states[s] for s in order}
 
+    # Sanitize: Manager LLM sometimes hallucinates product gates on IMPLEMENT/REVIEW.
+    # These states should always be decision gates per all team skill templates.
+    for sid in list(states.keys()):
+        if sid in ("IMPLEMENT", "REVIEW"):
+            gate = states[sid].get("gate", {})
+            if gate.get("type") == "product":
+                print(f"  ⚠️ Sanitized: {sid} product gate → decision gate (LLM hallucination)")
+                states[sid]["gate"] = self_gate(
+                    gate.get("required_roles", ["implementer", "code-reviewer"]),
+                    "REVIEW" if sid == "IMPLEMENT" else "DONE",
+                    "IMPLEMENT" if sid == "REVIEW" else sid,
+                    4
+                )
+                # Clear output_artifacts — product gate artifact validation runs
+                # independent of gate type in fsm.py; leaving stale artifacts here
+                # causes the same "missing" failure loop.
+                states[sid].pop("output_artifacts", None)
+
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     path = OUTPUT_DIR / f"{flow_id}.yaml"
     with open(path, "w", encoding="utf-8") as f:
