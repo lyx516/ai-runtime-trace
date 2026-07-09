@@ -1,0 +1,11 @@
+# Phase 3 A/B benchmark tasks — fixed reusable goals.
+# Each task is expected to complete through spec-clarify-team in ~7 min.
+
+- id: wc-shell
+  goal: "使用 spec-clarify-team 班底。任务：写一个简单的 Shell 脚本，接收一个文件路径参数，统计该文件的行数、单词数和字符数（类似 wc 命令的功能）"
+
+- id: word-freq-python
+  goal: "使用 spec-clarify-team 班底。任务：写一个 Python 脚本读取文本文件，统计每个单词的出现频率，按频率降序输出"
+
+- id: todo-cli
+  goal: "使用 spec-clarify-team 班底。任务：写一个命令行 TODO 管理工具，支持 add、list、done、delete 四个子命令，数据持久化到 JSON 文件"
