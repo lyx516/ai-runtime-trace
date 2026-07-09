@@ -221,14 +221,15 @@ def compare_runs(tool_stats_a: dict, tool_stats_b: dict) -> dict:
     seconds_a = tool_stats_a.get("total_seconds", 0)
     seconds_b = tool_stats_b.get("total_seconds", 0)
 
-    regression = (
-        tool_stats_b.get("outcome", "").startswith("abort")
-        or any(
-            tool_stats_a.get("by_state", {}).get(s, {}).get("total", 0) > 0
-            and d > max(3, tool_stats_a["by_state"][s]["total"] * 0.15)
-            for s, d in delta.items()
-        )
-    )
+    regression = False
+    if tool_stats_b.get("outcome", "").startswith("abort"):
+        regression = True
+    else:
+        for s, d in delta.items():
+            a = tool_stats_a.get("by_state", {}).get(s, {}).get("total", 0)
+            if a > 0 and d > max(3, a * 0.15):
+                regression = True
+                break
 
     return {
         "delta": delta,
