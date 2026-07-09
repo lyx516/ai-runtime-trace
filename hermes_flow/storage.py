@@ -27,6 +27,8 @@ from hermes_flow.schemas import (
 )
 from hermes_flow.trace import get_tracer
 
+PROJECT_ROOT_PATH = Path(__file__).resolve().parent.parent  # ai-runtime-trace/
+
 
 # ── SQLite schema DDL ───────────────────────────────────────────────────────
 
@@ -220,6 +222,16 @@ CREATE TABLE IF NOT EXISTS run_agent_feedback (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_feedback_agent ON run_agent_feedback(agent_id, status);
+
+CREATE TABLE IF NOT EXISTS evolution_backups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    original_content TEXT NOT NULL,
+    patch_summary TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    reverted INTEGER DEFAULT 0
+);
 """
 
 
@@ -897,6 +909,45 @@ class RuntimeStore:
             (_now(), row_id),
         )
         conn.commit()
+
+    def save_evolution_backup(self, run_id: str, file_path: str, original_content: str, patch_summary: str) -> int:
+        """Save a file backup before framework patching. Returns backup id."""
+        conn = self.connect()
+        cur = conn.execute(
+            "INSERT INTO evolution_backups (run_id, file_path, original_content, patch_summary, created_at) VALUES (?, ?, ?, ?, ?)",
+            (run_id, file_path, original_content, patch_summary, _now()),
+        )
+        conn.commit()
+        return cur.lastrowid or 0
+
+    def get_evolution_backup(self, backup_id: int) -> dict | None:
+        """Retrieve a single backup by id."""
+        row = self.connect().execute("SELECT * FROM evolution_backups WHERE id=?", (backup_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_evolution_backups(self, run_id: str | None = None, reverted: int = 0) -> list[dict]:
+        """List backups, optionally filtered by run_id and reverted flag."""
+        conn = self.connect()
+        where = ["reverted=?"]; params: list = [reverted]
+        if run_id:
+            where.append("run_id=?"); params.append(run_id)
+        rows = conn.execute(
+            f"SELECT * FROM evolution_backups WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT 50",
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def revert_evolution_backup(self, backup_id: int) -> bool:
+        """Restore file from backup and mark as reverted."""
+        conn = self.connect()
+        row = conn.execute("SELECT * FROM evolution_backups WHERE id=?", (backup_id,)).fetchone()
+        if not row:
+            return False
+        abs_path = PROJECT_ROOT_PATH / row["file_path"]
+        abs_path.write_text(row["original_content"])
+        conn.execute("UPDATE evolution_backups SET reverted=1 WHERE id=?", (backup_id,))
+        conn.commit()
+        return True
 
     def load_all_pending_feedback(self) -> list[dict[str, Any]]:
         """Load all pending feedback across all agents."""

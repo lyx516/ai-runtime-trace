@@ -8,7 +8,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, Optional
 
+PROJECT_ROOT_PATH = Path(__file__).resolve().parent.parent.parent.parent  # ai-runtime-trace/
+
+# ── Framework patch whitelist ───────────────────────────────────────────
+# Only these files may be modified via EvolutionAgent's patch_framework action.
+_FRAMEWORK_WHITELIST = {
+    "experiments/agent-pool/engine/session.py",
+    "experiments/agent-pool/agents/manager/skills/spec-team.md",
+    "experiments/agent-pool/agents/manager/skills/spec-clarify-team.md",
+}
 from hermes_flow.hooks import reset_bus
 from hermes_flow.schemas import AgentSessionState
 
@@ -154,7 +164,6 @@ def evolve():
 - value 设为 APPROVE（完成）或 REQUEST_CHANGES（数据不足需更多调查）
 
 JSON 格式：
-{{"feedback":[{{"agent_id":"x","category":"memory|skill|tool","suggestion":"...","evidence":"..."}}],"evolution_actions":[{{"type":"update_memory|update_skill|dismiss","agent_id":"x","detail":"- 纯改进条目"}}]}}
 
 无改进时 feedback 和 evolution_actions 均用空数组 []。"""
 
@@ -204,6 +213,7 @@ JSON 格式：
                     print(f"     📝 feedback: [{fb['agent_id']}] {fb['suggestion'][:80]}")
 
             evo_actions = eval_result.get("evolution_actions", [])
+            _patch_count = 0  # limit framework patches to 3 per run
             for act in evo_actions:
                 atype = act.get("type", "")
                 detail = act.get("detail", "")
@@ -231,6 +241,48 @@ JSON 格式：
                         print(f"     ✅ [{target_agent}] {target_file.name}: +{len(new_content)}B")
                     else:
                         print(f"     ⚠️  [{target_agent}] {target_file.name} 超限, skipped")
+                elif atype == "patch_framework" and _patch_count < 3:
+                    target_file = act.get("target_file", "")
+                    if target_file not in _FRAMEWORK_WHITELIST:
+                        print(f"     ⚠️  patch_framework: {target_file} not in whitelist")
+                        continue
+                    old_s = act.get("old_string", "")
+                    new_s = act.get("new_string", "")
+                    patch_summary = act.get("patch_summary", "no summary")
+                    abs_path = PROJECT_ROOT_PATH / target_file
+                    if not abs_path.exists():
+                        print(f"     ⚠️  patch_framework: {target_file} does not exist")
+                        continue
+                    original = abs_path.read_text()
+                    if old_s not in original:
+                        print(f"     ⚠️  patch_framework: old_string not found in {target_file}")
+                        continue
+                    # Backup
+                    backup_id = store.save_evolution_backup(run_id, target_file, original, patch_summary)
+                    # Apply
+                    new_content = original.replace(old_s, new_s, 1)
+                    assert new_content != original, "replace didn't change content"
+                    abs_path.write_text(new_content)
+                    # Pytest gate
+                    import subprocess
+                    result = subprocess.run(
+                        [str(PROJECT_ROOT_PATH / ".venv" / "bin" / "python"), "-m", "pytest",
+                         str(PROJECT_ROOT_PATH / "tests" / "hermes_flow"), "-q"],
+                        capture_output=True, timeout=30, cwd=str(PROJECT_ROOT_PATH),
+                    )
+                    if result.returncode != 0:
+                        abs_path.write_text(original)
+                        print(f"     ❌ patch_framework: pytest failed, rolled back {target_file}")
+                        print(f"        {result.stderr.decode()[:200] if result.stderr else ''}")
+                    else:
+                        _patch_count += 1
+                        total_actions += 1
+                        print(f"     ✅ patch_framework: {target_file} ({patch_summary})")
+                elif atype == "revert_framework":
+                    backup_id = act.get("backup_id", 0)
+                    if backup_id and store.revert_evolution_backup(backup_id):
+                        total_actions += 1
+                        print(f"     ↩  revert_framework: backup #{backup_id} restored")
         else:
             print(f"  ⚠️  No evaluation JSON found in EvolutionAgent response")
 
