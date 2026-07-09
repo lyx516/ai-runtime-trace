@@ -101,3 +101,63 @@ def test_framework_whitelist_contains_team_skills():
     from engine.evolve import _FRAMEWORK_WHITELIST
     assert "experiments/agent-pool/agents/manager/skills/spec-team.md" in _FRAMEWORK_WHITELIST
     assert "experiments/agent-pool/agents/manager/skills/spec-clarify-team.md" in _FRAMEWORK_WHITELIST
+
+
+# ── compare_runs pure function tests ───────────────────────────────────
+
+
+def test_compare_runs_no_regression():
+    """Small delta across states → no regression."""
+    from engine.evaluate import compare_runs
+    a = {
+        "outcome": "completed@DONE",
+        "total_seconds": 400.0,
+        "by_state": {
+            "IMPLEMENT": {"total": 60, "by_role": {"implementer": 40, "code-reviewer": 20}},
+            "REVIEW": {"total": 30, "by_role": {"code-reviewer": 30}},
+        },
+    }
+    b = {
+        "outcome": "completed@DONE",
+        "total_seconds": 380.0,
+        "by_state": {
+            "IMPLEMENT": {"total": 55, "by_role": {"implementer": 35, "code-reviewer": 20}},
+            "REVIEW": {"total": 32, "by_role": {"code-reviewer": 32}},
+        },
+    }
+    result = compare_runs(a, b)
+    assert result["regression"] is False
+    assert result["delta"]["IMPLEMENT"] == -5  # improved
+    assert result["seconds_delta"] == -20.0
+
+
+def test_compare_runs_regression_high_delta():
+    """One state jumped >15% & >3 absolute → regression."""
+    from engine.evaluate import compare_runs
+    a = {
+        "outcome": "completed@DONE",
+        "total_seconds": 400.0,
+        "by_state": {
+            "IMPLEMENT": {"total": 60, "by_role": {"implementer": 40, "code-reviewer": 20}},
+        },
+    }
+    b = {
+        "outcome": "completed@DONE",
+        "total_seconds": 500.0,
+        "by_state": {
+            "IMPLEMENT": {"total": 80, "by_role": {"implementer": 55, "code-reviewer": 25}},
+        },
+    }
+    result = compare_runs(a, b)
+    assert result["regression"] is True
+    assert result["delta"]["IMPLEMENT"] == 20  # 60→80, +33% >15%
+    assert result["seconds_delta"] == 100.0
+
+
+def test_compare_runs_regression_aborted():
+    """Run B aborted → always regression regardless of metric."""
+    from engine.evaluate import compare_runs
+    a = {"outcome": "completed@DONE", "total_seconds": 300.0, "by_state": {}}
+    b = {"outcome": "aborted@IMPLEMENT", "total_seconds": 100.0, "by_state": {}}
+    result = compare_runs(a, b)
+    assert result["regression"] is True

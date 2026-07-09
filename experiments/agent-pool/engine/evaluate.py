@@ -203,3 +203,35 @@ def persist_performance(store, run_id: str, goal: str, agent_ids: list[str],
     print(f"  📊 Performance: score={success_score} bottleneck={bottleneck} agents={list(agent_scores.keys())}")
 
     return store.load_run_performance(run_id)
+
+
+def compare_runs(tool_stats_a: dict, tool_stats_b: dict) -> dict:
+    """Compare two runs' tool_stats dicts, return delta + regression flag.
+
+    Pure function — no I/O, no store dependency.
+    Regression: any state increased >15% & >3 absolute, OR run B aborted.
+    """
+    states = set(tool_stats_a.get("by_state", {})) | set(tool_stats_b.get("by_state", {}))
+    delta: dict[str, int] = {}
+    for s in sorted(states):
+        a = tool_stats_a.get("by_state", {}).get(s, {}).get("total", 0)
+        b = tool_stats_b.get("by_state", {}).get(s, {}).get("total", 0)
+        delta[s] = b - a
+
+    seconds_a = tool_stats_a.get("total_seconds", 0)
+    seconds_b = tool_stats_b.get("total_seconds", 0)
+
+    regression = (
+        tool_stats_b.get("outcome", "").startswith("abort")
+        or any(
+            tool_stats_a.get("by_state", {}).get(s, {}).get("total", 0) > 0
+            and d > max(3, tool_stats_a["by_state"][s]["total"] * 0.15)
+            for s, d in delta.items()
+        )
+    )
+
+    return {
+        "delta": delta,
+        "seconds_delta": round(seconds_b - seconds_a, 1),
+        "regression": regression,
+    }
