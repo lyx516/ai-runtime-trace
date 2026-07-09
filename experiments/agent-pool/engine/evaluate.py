@@ -11,6 +11,7 @@ per-agent scores + run_score) and writes run_performance to SQLite.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 
 def capture_run_metrics(store, run_id: str, goal: str, agent_ids: list[str]) -> dict:
@@ -92,6 +93,18 @@ def capture_run_metrics(store, run_id: str, goal: str, agent_ids: list[str]) -> 
     # Write to run_performance table
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc).isoformat()
+    # Inject goal_id from benchmarks keyword matching
+    _gid = "other"
+    try:
+        _bmp = Path(__file__).resolve().parent / "benchmarks" / "tasks.yaml"
+        if _bmp.exists():
+            import yaml as _by
+            for _bt in _by.safe_load(_bmp.read_text()) or []:
+                if any(kw.lower() in goal.lower() for kw in _bt.get("keywords", [])):
+                    _gid = _bt["id"]; break
+    except Exception:
+        pass
+
     conn.execute(
         "INSERT OR REPLACE INTO run_performance "
         "(run_id, success_score, summary, agent_scores, bottleneck_state, "
@@ -100,7 +113,7 @@ def capture_run_metrics(store, run_id: str, goal: str, agent_ids: list[str]) -> 
         (
             run_id,
             85 if row["status"] == "completed" else 40,
-            f"Task: {goal[:100]}. {outcome}. {sum(d['total'] for d in per_state.values())} tool calls.",
+            f"Task: {goal[:90]} [goal_id:{_gid}]. {outcome}. {sum(d['total'] for d in per_state.values())} tool calls.",
             json.dumps({}),
             max(per_state, key=lambda k: per_state[k]["total"]) if per_state else "?",
             json.dumps(tool_stats),
@@ -169,8 +182,16 @@ def persist_performance(store, run_id: str, goal: str, agent_ids: list[str],
         success_score = max(0, min(100, int(raw_run_score))) if raw_run_score is not None else (85 if completed else 40)
     except (ValueError, TypeError):
         success_score = 85 if completed else 40
+    # Preserve [goal_id:xxx] tag from existing summary if present
+    _existing = store.load_run_performance(run_id)
+    _goal_tag = ""
+    if _existing:
+        import re as _re_gid
+        _m = _re_gid.search(r"\[goal_id:[a-z0-9\-]+\]", _existing.get("summary", ""))
+        if _m:
+            _goal_tag = _m.group(0)
     summary = (
-        f"Task: {goal[:100]}. "
+        f"Task: {_goal_tag + ' ' if _goal_tag else ''}{goal[:90]}. "
         f"{'Completed' if completed else 'Active/Aborted'}. "
         f"{decs_count} decisions, {msgs_count} messages, "
         f"{len(tool_calls)} tool calls across {len(agent_ids)} agents. "
