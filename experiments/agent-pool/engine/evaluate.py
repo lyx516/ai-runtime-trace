@@ -90,6 +90,8 @@ def capture_run_metrics(store, run_id: str, goal: str, agent_ids: list[str]) -> 
     }
 
     # Write to run_performance table
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
     conn.execute(
         "INSERT OR REPLACE INTO run_performance "
         "(run_id, success_score, summary, agent_scores, bottleneck_state, "
@@ -103,7 +105,7 @@ def capture_run_metrics(store, run_id: str, goal: str, agent_ids: list[str]) -> 
             max(per_state, key=lambda k: per_state[k]["total"]) if per_state else "?",
             json.dumps(tool_stats),
             "",
-            "",  # evaluated_at is set by save_run_performance, but INSERT OR REPLACE needs it
+            now,
         ),
     )
     conn.commit()
@@ -176,13 +178,26 @@ def persist_performance(store, run_id: str, goal: str, agent_ids: list[str],
     )
     suggestions = eval_result.get("gate_suggestion", "") if eval_result else ""
 
+    # Preserve structured tool_stats from capture_run_metrics if they exist.
+    # capture_run_metrics writes per-state detail; persist_performance only adds
+    # EvolutionAgent's scores + suggestions. Don't overwrite the good data.
+    final_tool_stats = dict(tool_calls)
+    existing = store.load_run_performance(run_id)
+    if existing:
+        try:
+            existing_ts = json.loads(existing["tool_stats"]) if isinstance(existing.get("tool_stats"), str) else existing.get("tool_stats", {})
+        except (json.JSONDecodeError, TypeError):
+            existing_ts = {}
+        if isinstance(existing_ts, dict) and "by_state" in existing_ts:
+            final_tool_stats = existing_ts
+
     store.save_run_performance(
         run_id=run_id,
         success_score=success_score,
         summary=summary,
         agent_scores=agent_scores,
         bottleneck_state=bottleneck,
-        tool_stats=tool_calls,
+        tool_stats=final_tool_stats,
         suggestions=suggestions,
     )
     print(f"  📊 Performance: score={success_score} bottleneck={bottleneck} agents={list(agent_scores.keys())}")
