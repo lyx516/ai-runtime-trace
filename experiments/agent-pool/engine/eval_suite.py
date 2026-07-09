@@ -4,80 +4,111 @@
 Usage: .venv/bin/python experiments/agent-pool/engine/eval_suite.py [--json]
 
 Three reports:
-  1. Run completion rate by flow type
+  1. Run completion rate by goal_id (matched from benchmarks/tasks.yaml keywords)
   2. Per-agent tool usage distribution
   3. Bottleneck state heatmap (by stage)
 """
 
 import json
+import re
 import sqlite3
 from collections import defaultdict
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 RUNS_ROOT = PROJECT_ROOT / "experiments" / "agent-pool" / ".hermes-flow" / "runs"
+BENCHMARKS_PATH = PROJECT_ROOT / "experiments" / "agent-pool" / "benchmarks" / "tasks.yaml"
+
+
+def _load_benchmarks() -> list[dict]:
+    """Load benchmarks/tasks.yaml — each task has id + keywords list."""
+    if not BENCHMARKS_PATH.exists():
+        return []
+    import yaml as _yaml
+    return _yaml.safe_load(BENCHMARKS_PATH.read_text()) or []
+
+
+def _match_goal_id(summary: str, benchmarks: list[dict]) -> str:
+    """Match a run's summary text against benchmark keywords. Returns goal_id or 'other'."""
+    if not summary or not benchmarks:
+        return "other"
+    summary_lower = summary.lower()
+    for bm in benchmarks:
+        for kw in bm.get("keywords", []):
+            if re.search(kw.lower(), summary_lower):
+                return bm["id"]
+    return "other"
 
 
 def _connect_all_runs():
-    dbs = []
-    if not RUNS_ROOT.exists():
-        return dbs
-    for d in sorted(RUNS_ROOT.iterdir()):
-        sqlite = d / "state.sqlite"
-        if sqlite.exists():
-            conn = sqlite3.connect(str(sqlite))
-            conn.row_factory = sqlite3.Row
-            dbs.append((d.name, conn))
-    return dbs
+    """Open all state.sqlite connections once."""
+    conns = []
+    if RUNS_ROOT.exists():
+        for d in sorted(RUNS_ROOT.iterdir()):
+            sqlite_path = d / "state.sqlite"
+            if sqlite_path.exists():
+                conn = sqlite3.connect(str(sqlite_path))
+                conn.row_factory = sqlite3.Row
+                conns.append((d.name, conn))
+    return conns
 
 
 def report_1_completion():
-    """Report 1: Run completion rate by flow type."""
-    rows = []
-    for run_id, conn in _connect_all_runs():
-        r = conn.execute(
-            "SELECT status, COALESCE(flow_id,'?') as flow FROM runs WHERE run_id=?", (run_id,)
-        ).fetchone()
-        if not r:
-            continue
-        perf = conn.execute(
-            "SELECT tool_stats FROM run_performance WHERE run_id=?", (run_id,)
-        ).fetchone()
-        seconds = 0
-        if perf:
-            try:
-                seconds = json.loads(perf["tool_stats"]).get("total_seconds", 0)
-            except Exception:
-                pass
-        rows.append({"flow": r["flow"][:30], "status": r["status"], "seconds": seconds})
+    """Report 1: Run completion rate by goal_id."""
+    benchmarks = _load_benchmarks()
+    dbs = _connect_all_runs()
 
-    by_flow = defaultdict(lambda: {"total": 0, "completed": 0, "seconds": 0.0})
-    for r in rows:
-        by_flow[r["flow"]]["total"] += 1
-        if r["status"] == "completed":
-            by_flow[r["flow"]]["completed"] += 1
-        by_flow[r["flow"]]["seconds"] += r["seconds"]
+    by_goal = defaultdict(lambda: {"total": 0, "completed": 0, "seconds": 0.0, "examples": []})
+
+    for run_id, conn in dbs:
+        r = conn.execute(
+            "SELECT summary FROM run_performance WHERE run_id=?", (run_id,)
+        ).fetchone()
+        if not r or not r["summary"]:
+            continue
+        goal_id = _match_goal_id(r["summary"], benchmarks)
+
+        completed = "completed" in r["summary"].lower()
+
+        seconds = 0
+        try:
+            ts = json.loads(conn.execute(
+                "SELECT tool_stats FROM run_performance WHERE run_id=?", (run_id,)
+            ).fetchone()["tool_stats"])
+            seconds = ts.get("total_seconds", 0)
+        except Exception:
+            pass
+
+        by_goal[goal_id]["total"] += 1
+        if completed:
+            by_goal[goal_id]["completed"] += 1
+        by_goal[goal_id]["seconds"] += seconds
+        if len(by_goal[goal_id]["examples"]) < 2:
+            by_goal[goal_id]["examples"].append(run_id[:12])
 
     print("\n" + "=" * 70)
-    print("📊 Report 1: Run Completion Rate by Flow Type")
+    print("📊 Report 1: Run Completion Rate by Task Type")
     print("=" * 70)
-    print(f"{'Flow':<30s} {'Total':>6s} {'Done':>6s} {'%':>6s} {'Avg s':>8s}")
+    print(f"{'Task':<20s} {'Total':>6s} {'Done':>6s} {'%':>6s} {'Avg s':>8s}  {'Example runs'}")
     print("-" * 70)
-    for flow, stats in sorted(by_flow.items(), key=lambda x: -x[1]["total"]):
+    for goal_id, stats in sorted(by_goal.items(), key=lambda x: -x[1]["total"]):
         rate = stats["completed"] / stats["total"] * 100 if stats["total"] else 0
         avg = stats["seconds"] / stats["total"] if stats["total"] else 0
-        print(f"{flow:<30s} {stats['total']:>6d} {stats['completed']:>6d} {rate:>5.0f}% {avg:>7.0f}s")
+        examples = ", ".join(stats["examples"])
+        print(f"{goal_id:<20s} {stats['total']:>6d} {stats['completed']:>6d} {rate:>5.0f}% {avg:>7.0f}s  {examples}")
 
-    return [{**stats, "flow": flow} for flow, stats in by_flow.items()]
+    # Cleanup
+    for _, conn in dbs:
+        conn.close()
+    return [{**stats, "goal_id": goal_id} for goal_id, stats in by_goal.items()]
 
 
 def report_2_agent_tools():
     """Report 2: Per-agent tool usage distribution."""
+    dbs = _connect_all_runs()
     agents = defaultdict(lambda: defaultdict(int))
-    for run_id, conn in _connect_all_runs():
-        run_status = conn.execute("SELECT status FROM runs WHERE run_id=?", (run_id,)).fetchone()
-        if not run_status or run_status["status"] != "completed":
-            continue
+
+    for run_id, conn in dbs:
         for r in conn.execute(
             "SELECT role_id, step_type, COUNT(*) as cnt FROM thinking_events "
             "WHERE step_type NOT IN ('llm_call','submit_decision','agent_message_send') "
@@ -91,20 +122,24 @@ def report_2_agent_tools():
     for agent_id in sorted(agents.keys()):
         tools = agents[agent_id]
         total = sum(tools.values())
-        top3 = sorted(tools.items(), key=lambda x: -x[1])[:4]
+        top4 = sorted(tools.items(), key=lambda x: -x[1])[:4]
         print(f"\n  🤖 {agent_id} ({total} total calls)")
-        for tool, count in top3:
+        for tool, count in top4:
             pct = count / total * 100 if total else 0
             print(f"      {tool:<20s} {count:>5d} ({pct:>4.0f}%)")
 
+    for _, conn in dbs:
+        conn.close()
     return {agent: dict(tools) for agent, tools in agents.items()}
 
 
 def report_3_bottleneck():
     """Report 3: Bottleneck state heatmap."""
+    dbs = _connect_all_runs()
     state_calls = defaultdict(int)
     state_count = defaultdict(int)
-    for run_id, conn in _connect_all_runs():
+
+    for run_id, conn in dbs:
         perf = conn.execute(
             "SELECT tool_stats, success_score FROM run_performance WHERE run_id=?", (run_id,)
         ).fetchone()
@@ -131,6 +166,8 @@ def report_3_bottleneck():
         bar = "█" * max(1, int(calls / max(1, sorted_states[0][1]) * 30))
         print(f"{state:<20s} {runs:>6d} {calls:>14d} {avg:>9.0f}  {bar}")
 
+    for _, conn in dbs:
+        conn.close()
     return [{"state": s, "total_calls": c, "runs": state_count.get(s, 0)} for s, c in sorted_states]
 
 
@@ -145,10 +182,7 @@ def main():
     if as_json:
         print(json.dumps({"completion": r1, "agent_tools": r2, "bottleneck": r3}, indent=2, ensure_ascii=False))
 
-    print(f"\n✅ eval_suite complete. {len(_connect_all_runs())} run databases scanned.")
-    # Cleanup
-    for _, conn in _connect_all_runs():
-        conn.close()
+    print(f"\n✅ eval_suite complete.")
 
 
 if __name__ == "__main__":

@@ -3,9 +3,12 @@
 
 - id: wc-shell
   goal: "使用 spec-clarify-team 班底。任务：写一个简单的 Shell 脚本，接收一个文件路径参数，统计该文件的行数、单词数和字符数（类似 wc 命令的功能）"
+  keywords: ["wc", "行数", "单词数", "字符数", "shell脚本统计", "文件路径参数", "统计该文件的行数"]
 
 - id: word-freq-python
   goal: "使用 spec-clarify-team 班底。任务：写一个 Python 脚本读取文本文件，统计每个单词的出现频率，按频率降序输出"
+  keywords: ["词频", "单词频率", "word frequency", "统计每个单词", "按频率降序", "出现频率", "统计词频"]
 
 - id: todo-cli
   goal: "使用 spec-clarify-team 班底。任务：写一个命令行 TODO 管理工具，支持 add、list、done、delete 四个子命令，数据持久化到 JSON 文件"
+  keywords: ["TODO", "todo管理", "命令行todo", "add list done delete", "持久化.*JSON"]
