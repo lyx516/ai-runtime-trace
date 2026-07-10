@@ -308,6 +308,37 @@ def execute_tool(tool_id: str, args: dict, agent_id: str = "") -> dict:
         if run_fn is None:
             return {"ok": False, "error": f"Tool '{tool_id}' has no run()", "tool": tool_id}
 
+        # ── Security enforcement (read/write boundaries) ───────────────
+        from tools._security import check_read_allowed, check_write_sandboxed, _PROJECT_ROOT
+
+        def _deny(err_msg: str) -> dict:
+            return {"ok": False, "error": err_msg, "tool": tool_id}
+
+        if tool_id in ("file_read", "search_files"):
+            path_arg = args.get("path")
+            if path_arg:
+                err = check_read_allowed(path_arg)
+                if err:
+                    return _deny(err)
+
+        if tool_id in ("write_file", "patch"):
+            original_path = args.get("path", "")
+            if not original_path:
+                return _deny(f"{tool_id} requires a path")
+
+            redirected = check_write_sandboxed(original_path)
+            if redirected is not None:
+                # Sandbox mode: redirect writes to safe sandbox path
+                redirected.parent.mkdir(parents=True, exist_ok=True)
+                args = {**args, "path": str(redirected)}
+            else:
+                # Normal mode: verify this is a legitimate project write
+                _resolved = Path(original_path).resolve()
+                if not str(_resolved).startswith(str(_PROJECT_ROOT)):
+                    return _deny(f"{tool_id} denied: {original_path} is outside project root")
+            # TODO: auto-backup protected dirs via check_write_backup()
+            #       requires store/run_id, not available in execute_tool layer.
+
         result = run_fn(args)
 
         # Normalize: ensure result is a dict with standard keys
