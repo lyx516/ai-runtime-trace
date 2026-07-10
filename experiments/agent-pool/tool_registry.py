@@ -309,7 +309,7 @@ def execute_tool(tool_id: str, args: dict, agent_id: str = "") -> dict:
             return {"ok": False, "error": f"Tool '{tool_id}' has no run()", "tool": tool_id}
 
         # ── Security enforcement (read/write boundaries) ───────────────
-        from tools._security import check_read_allowed, check_write_sandboxed, _PROJECT_ROOT
+        from tools._security import check_read_allowed, check_write_sandboxed, _PROJECT_ROOT, get_sandbox_root
 
         def _deny(err_msg: str) -> dict:
             return {"ok": False, "error": err_msg, "tool": tool_id}
@@ -321,6 +321,7 @@ def execute_tool(tool_id: str, args: dict, agent_id: str = "") -> dict:
                 if err:
                     return _deny(err)
 
+        sandbox_override = False
         if tool_id in ("write_file", "patch"):
             original_path = args.get("path", "")
             if not original_path:
@@ -331,6 +332,7 @@ def execute_tool(tool_id: str, args: dict, agent_id: str = "") -> dict:
                 # Sandbox mode: redirect writes to safe sandbox path
                 redirected.parent.mkdir(parents=True, exist_ok=True)
                 args = {**args, "path": str(redirected)}
+                sandbox_override = True
             else:
                 # Normal mode: verify this is a legitimate project write
                 _resolved = Path(original_path).resolve()
@@ -339,7 +341,19 @@ def execute_tool(tool_id: str, args: dict, agent_id: str = "") -> dict:
             # TODO: auto-backup protected dirs via check_write_backup()
             #       requires store/run_id, not available in execute_tool layer.
 
-        result = run_fn(args)
+        if sandbox_override:
+            sandbox_root = get_sandbox_root()
+            old_workspace = os.environ.get("HERMES_WORKSPACE_ROOT", "")
+            os.environ["HERMES_WORKSPACE_ROOT"] = str(sandbox_root)
+            try:
+                result = run_fn(args)
+            finally:
+                if old_workspace:
+                    os.environ["HERMES_WORKSPACE_ROOT"] = old_workspace
+                else:
+                    os.environ.pop("HERMES_WORKSPACE_ROOT", None)
+        else:
+            result = run_fn(args)
 
         # Normalize: ensure result is a dict with standard keys
         if not isinstance(result, dict):
