@@ -451,7 +451,8 @@ def evolve_agent(agent_id: str, apply: bool = False):
 
                 if store and all_fb:
                     _ckpt_run = all_fb[0].get("run_id", "?")
-                    store.save_evolution_backup(_ckpt_run, str(target_file), target_file.read_text(), f"checkpoint before {target_file.name}")
+                    _rel = str(target_file.relative_to(PROJECT_ROOT_PATH))
+                    store.save_evolution_backup(_ckpt_run, _rel, target_file.read_text(), f"checkpoint before {target_file.name}")
                 with open(target_file, "a") as f:
                     f.write(new_content)
                 applied += 1
