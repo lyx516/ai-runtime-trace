@@ -96,7 +96,7 @@ def capture_run_metrics(store, run_id: str, goal: str, agent_ids: list[str]) -> 
     # Inject goal_id from benchmarks keyword matching
     _gid = "other"
     try:
-        _bmp = Path(__file__).resolve().parent.parent.parent / "experiments" / "agent-pool" / "benchmarks" / "tasks.yaml"
+        _bmp = Path(__file__).resolve().parent.parent / "benchmarks" / "tasks.yaml"
         if _bmp.exists():
             import yaml as _by
             for _bt in _by.safe_load(_bmp.read_text()) or []:
