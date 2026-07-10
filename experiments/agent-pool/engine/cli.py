@@ -2,6 +2,8 @@
 
 Subcommands:
   debate <task>                         Start a new task
+  debate --self <task>                  Sandboxed task (writes go to .self/)
+  debate --apply-sandbox <id> [--yes]   Apply sandboxed changes to real project
   debate --resume <run_id> [opts]       Resume an interrupted run
   debate --analyze                      Cross-run pattern analysis
   debate --evolve                       EvolutionAgent self-evaluation
@@ -48,6 +50,8 @@ def print_help():
 
 用法:
   debate <任务描述>                              启动新任务
+  debate --self <任务>                           沙箱模式运行（写操作隔离到 .self/）
+  debate --apply-sandbox <id> [--yes]           合入沙箱改动到真实项目
   debate --resume <run_id>                       恢复中断的 run
   debate --resume --history                      显示历史列表
   debate --resume --performance <run_id>         查看 run 评分
@@ -60,6 +64,9 @@ def print_help():
   debate --resume <run_id> --states              查看可恢复状态（不执行）
   debate --resume <run_id> --from-state <STATE>  从指定 state 创建新分支并恢复
   debate --resume <run_id> "补充说明"             恢复时注入额外上下文
+  debate --checkpoints                           查看进化检查点
+  debate --diff-checkpoint <id>                  对比检查点与当前文件
+  debate --revert-checkpoint <id>                 回滚文件到检查点版本
 
 LLM 配置:
   debate --set-model <model>                     设置默认模型（持久化）
@@ -79,6 +86,8 @@ LLM 配置:
 
 示例:
   debate "用3句话介绍 Rust 语言"
+  debate --self "给 cli.py 加 --quiet 参数"
+  debate --apply-sandbox auto-xxx
   debate --resume ede4011e0d60
   debate --resume ede4011e0d60 --states
   debate --resume ede4011e0d60 --from-state SPEC
@@ -168,7 +177,8 @@ def _handle_resume(argv: list[str]):
 #  New task (debate <task>)
 # ═══════════════════════════════════════════════════════════════════════
 
-def _handle_task(goal: str, cli_model: str = "", cli_url: str = "", cli_key: str = ""):
+def _handle_task(goal: str, cli_model: str = "", cli_url: str = "", cli_key: str = "",
+                self_mode: bool = False):
     """Start a new debate task."""
     # Apply CLI LLM overrides for this run (via env vars; load_config reads them)
     if cli_model:
@@ -179,6 +189,14 @@ def _handle_task(goal: str, cli_model: str = "", cli_url: str = "", cli_key: str
         os.environ["HERMES_LLM_API_KEY"] = cli_key
 
     run_name = goal[:60]
+
+    # Sandbox mode: activate before anything else
+    if self_mode:
+        sandbox_root = _SCRIPT_DIR / ".self" / run_name.replace(" ", "_")
+        sandbox_root.mkdir(parents=True, exist_ok=True)
+        from tools._security import set_sandbox_root
+        set_sandbox_root(sandbox_root)
+        print(f"🔒 沙箱模式: {sandbox_root}")
 
     print(f"\n{'='*60}")
     print(f"🤖 Auto-Debate v2")
@@ -228,24 +246,23 @@ def _handle_task(goal: str, cli_model: str = "", cli_url: str = "", cli_key: str
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  Main entry
+#  Checkpoint subcommands
 # ═══════════════════════════════════════════════════════════════════════
-
 
 def _cmd_checkpoints(argv: list[str]):
     """Handle --checkpoints, --diff-checkpoint <id>, --revert-checkpoint <id>."""
     import difflib
     from hermes_flow.storage import RuntimeStore
-    
+
     cmd = argv[0]
-    
+
     # Collect all run stores
     run_dirs = []
     for base in (Path(PROJECT_ROOT) / ".hermes-flow" / "runs", _SCRIPT_DIR / ".hermes-flow" / "runs"):
         if base.exists():
             run_dirs.extend(sorted(base.iterdir()))
     run_dirs = [d for d in run_dirs if d.is_dir()]
-    
+
     stores = {}
     for d in run_dirs:
         try:
@@ -254,7 +271,7 @@ def _cmd_checkpoints(argv: list[str]):
             stores[d.name] = s
         except Exception:
             pass
-    
+
     if cmd == "--checkpoints":
         total = 0
         for rid, store in sorted(stores.items()):
@@ -264,7 +281,7 @@ def _cmd_checkpoints(argv: list[str]):
         if total == 0:
             print("  (no checkpoints found)")
         return
-    
+
     if cmd in ("--diff-checkpoint", "--revert-checkpoint"):
         if len(argv) < 2:
             print(f"❌ {cmd} requires a backup_id")
@@ -291,9 +308,91 @@ def _cmd_checkpoints(argv: list[str]):
                 return
         print(f"❌ Backup #{bid} not found in any run store")
         return
-    
+
     print(f"❌ Unknown checkpoint command: {cmd}")
     sys.exit(1)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Sandbox apply subcommand
+# ═══════════════════════════════════════════════════════════════════════
+
+def _cmd_apply_sandbox(argv: list[str]):
+    """Apply sandboxed changes to real project. Archive to independent git first."""
+    import subprocess as _sp
+    import shutil
+
+    run_id = argv[1]
+    auto_yes = "--yes" in argv
+
+    sandbox_dir = _SCRIPT_DIR / ".self" / run_id
+    if not sandbox_dir.exists():
+        print(f"❌ Sandbox {run_id} not found at {sandbox_dir}")
+        sys.exit(1)
+
+    # 1. Archive: independent git init + commit (not affecting project git)
+    if not shutil.which("git"):
+        print("❌ git not found in PATH")
+        sys.exit(1)
+
+    archive_git = sandbox_dir / ".git"
+    if not archive_git.exists():
+        _sp.run(["git", "init"], cwd=str(sandbox_dir), capture_output=True)
+        _sp.run(["git", "-c", "user.name=sandbox", "-c", "user.email=sandbox@local",
+                  "commit", "--allow-empty", "-m", "empty root"],
+                cwd=str(sandbox_dir), capture_output=True)
+
+    _sp.run(["git", "add", "-A"], cwd=str(sandbox_dir), capture_output=True)
+    _sp.run(["git", "-c", "user.name=sandbox", "-c", "user.email=sandbox@local",
+              "commit", "-m", f"snapshot before apply {run_id}",
+              "--allow-empty"],
+            cwd=str(sandbox_dir), capture_output=True)
+
+    # 2. Scan diffs
+    changed = []
+    for f in sorted(sandbox_dir.rglob("*")):
+        if f.is_file() and ".git" not in f.parts:
+            rel = f.relative_to(sandbox_dir)
+            real = Path(PROJECT_ROOT) / rel
+            if not real.exists() or real.read_bytes() != f.read_bytes():
+                changed.append(rel)
+
+    if not changed:
+        print("✅ No changes to apply.")
+        return
+
+    # 3. Print diff summary
+    print(f"📋 {len(changed)} file(s) to apply:")
+    for rel in changed:
+        print(f"   {rel}")
+
+    if not auto_yes:
+        try:
+            answer = input("Apply these changes? [y/N] ").strip().lower()
+        except EOFError:
+            answer = "n"
+        if answer != "y":
+            print("⏭  Skipped.")
+            return
+
+    # 4. Apply
+    skipped = []
+    applied = 0
+    for rel in changed:
+        src = sandbox_dir / rel
+        dst = Path(PROJECT_ROOT) / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(src.read_bytes())
+        applied += 1
+
+    plural = "s" if applied != 1 else ""
+    suffix = f" (skipped {len(skipped)} conflict)" if skipped else ""
+    print(f"✅ Applied {applied} file{plural}.{suffix}")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Main entry
+# ═══════════════════════════════════════════════════════════════════════
 
 def main():
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
@@ -356,8 +455,19 @@ def main():
         _cmd_checkpoints(argv)
         return
 
+    if argv[0] == "--apply-sandbox":
+        if len(argv) < 2:
+            print("❌ --apply-sandbox requires a run_id")
+            sys.exit(1)
+        _cmd_apply_sandbox(argv)
+        return
+
+    # ── --self mode: strip flag, pass to _handle_task ────────
+    self_mode = "--self" in argv
+    if self_mode:
+        argv = [a for a in argv if a != "--self"]
+
     # ── LLM runtime override flags + task ────────────────────
-    # Extract --model / --api-url / --api-key flags before the task
     cli_model = ""
     cli_url = ""
     cli_key = ""
@@ -382,7 +492,17 @@ def main():
         print("❌ 请提供任务描述")
         sys.exit(1)
 
-    _handle_task(goal, cli_model=cli_model, cli_url=cli_url, cli_key=cli_key)
+    _handle_task(goal, cli_model=cli_model, cli_url=cli_url, cli_key=cli_key,
+                self_mode=self_mode)
+
+    # Cleanup sandbox state after run to prevent leakage
+    if self_mode:
+        from tools._security import set_sandbox_root, get_sandbox_root
+        sb = get_sandbox_root()
+        set_sandbox_root(None)
+        if sb:
+            print(f"\n🔒 沙箱产物: {sb}")
+            print(f"   审核后合入: debate --apply-sandbox {sb.name}")
 
 
 if __name__ == "__main__":
