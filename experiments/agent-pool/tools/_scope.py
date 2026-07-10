@@ -37,6 +37,11 @@ def _resolve_against_workspace(path: str) -> Path:
 
     target = target.resolve()
 
+    # Sandbox mode: allow redirected paths (under sandbox root)
+    import tools._security as _sec
+    if _sec._SANDBOX_ROOT and str(target).startswith(str(_sec._SANDBOX_ROOT)):
+        return target
+
     try:
         target.relative_to(workspace)
     except ValueError:
