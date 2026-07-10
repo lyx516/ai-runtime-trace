@@ -231,6 +231,70 @@ def _handle_task(goal: str, cli_model: str = "", cli_url: str = "", cli_key: str
 #  Main entry
 # ═══════════════════════════════════════════════════════════════════════
 
+
+def _cmd_checkpoints(argv: list[str]):
+    """Handle --checkpoints, --diff-checkpoint <id>, --revert-checkpoint <id>."""
+    import difflib
+    from hermes_flow.storage import RuntimeStore
+    
+    cmd = argv[0]
+    
+    # Collect all run stores
+    run_dirs = []
+    for base in (Path(PROJECT_ROOT) / ".hermes-flow" / "runs", _SCRIPT_DIR / ".hermes-flow" / "runs"):
+        if base.exists():
+            run_dirs.extend(sorted(base.iterdir()))
+    run_dirs = [d for d in run_dirs if d.is_dir()]
+    
+    stores = {}
+    for d in run_dirs:
+        try:
+            s = RuntimeStore(d)
+            s.init_schema()
+            stores[d.name] = s
+        except Exception:
+            pass
+    
+    if cmd == "--checkpoints":
+        total = 0
+        for rid, store in sorted(stores.items()):
+            for b in store.list_evolution_backups(reverted=0):
+                print(f"  #{b['id']:<4} run={b['run_id']:<14} file={b['file_path']:<60} {b['patch_summary']}")
+                total += 1
+        if total == 0:
+            print("  (no checkpoints found)")
+        return
+    
+    if cmd in ("--diff-checkpoint", "--revert-checkpoint"):
+        if len(argv) < 2:
+            print(f"❌ {cmd} requires a backup_id")
+            sys.exit(1)
+        bid = int(argv[1])
+        for rid, store in sorted(stores.items()):
+            b = store.get_evolution_backup(bid)
+            if b:
+                abs_path = Path(PROJECT_ROOT) / b["file_path"]
+                if cmd == "--diff-checkpoint":
+                    current = abs_path.read_text().splitlines(True) if abs_path.exists() else ["(file missing)\n"]
+                    original = b["original_content"].splitlines(True)
+                    diff = difflib.unified_diff(
+                        original, current,
+                        fromfile=f"{b['file_path']} (checkpoint #{bid})",
+                        tofile=f"{b['file_path']} (current)",
+                    )
+                    sys.stdout.writelines(diff)
+                else:  # --revert-checkpoint
+                    if store.revert_evolution_backup(bid):
+                        print(f"✅ Reverted #{bid}: {b['file_path']}")
+                    else:
+                        print(f"❌ Revert failed for #{bid}")
+                return
+        print(f"❌ Backup #{bid} not found in any run store")
+        return
+    
+    print(f"❌ Unknown checkpoint command: {cmd}")
+    sys.exit(1)
+
 def main():
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print_help()
@@ -286,6 +350,10 @@ def main():
     if argv[0] == "--feedback":
         agent_id = argv[1] if len(argv) > 1 else None
         show_feedback(agent_id)
+        return
+
+    if argv[0] in ("--checkpoints", "--diff-checkpoint", "--revert-checkpoint"):
+        _cmd_checkpoints(argv)
         return
 
     # ── LLM runtime override flags + task ────────────────────
