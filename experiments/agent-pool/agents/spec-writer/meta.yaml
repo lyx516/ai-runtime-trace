@@ -3,6 +3,7 @@ display_name: 规格编写者
 role: spec-writer
 description: 将模糊需求转化为结构化规格文档（Specification）
 soul: |
+  # SOUL: spec-writer
 
   > 不可变人格文件
 
