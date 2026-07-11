@@ -201,13 +201,9 @@ def _run_fsm_loop(store, run_id: str, goal: str, agent_ids: list[str], agents: d
                 except Exception:
                     pass
 
-            # Record the decision so evaluate_gate sees it.
-            # When submit_decision is called as a tool, hooks_wiring also persists it
-            # via SESSION_DECIDE; this fallback covers the path where hooks aren't wired
-            # (tests, resume, single-shot).  Double-recording is harmless because
-            # evaluate_gate reads the latest decision per role via ORDER BY created_at DESC.
-            from hermes_flow.tools import flow_decide
-            flow_decide(run_id, state_id, role_id, val, reason)
+            # Decision is already persisted via SESSION_DECIDE hook in session.py.
+            # This branch used to call flow_decide() directly, but that caused double-writes.
+            # Product gate override (below) will UPDATE the same row if needed.
 
             # Product gate: if artifact is invalid, override the agent's decision.
             output_artifacts = state_dict.get("output_artifacts", [])

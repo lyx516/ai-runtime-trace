@@ -117,7 +117,7 @@ ai-runtime-trace/
 - [ ] 跨 run 模式识别: 积累足够数据后, 自动生成改进建议
 - [ ] EvolutionAgent 自主应用改进 (当前需人工审核)
 - [ ] Agent 元数据 (SOUL/skills) 暴露给 Manager 用于更精准选队
-- [ ] 端到端测试: 多 agent pipeline 完整通过 (IMPLEMENT→REVIEW loop 问题待修)
+- [x] 端到端测试: 多 agent pipeline 完整通过 — d341ad02ffeb 验证通过, decision 双写已修复
 
 ## 设计原则
 

@@ -532,6 +532,13 @@ def _run_session_loop(
             dt = time.time() - t0
         except Exception as e:
             print(f" ❌ {e}")
+            emit(Hook.SESSION_DECIDE, {
+                "run_id": run_id,
+                "role_id": state.role_id,
+                "state_id": state.state_id,
+                "value": "REQUEST_CHANGES",
+                "reason": f"[fallback] LLM error: {e}",
+            })
             emit(Hook.SESSION_DONE, {
                 "run_id": run_id,
                 "role_id": state.role_id,
@@ -781,6 +788,13 @@ def _run_session_loop(
 
     # Max turns reached
     print(f"     ⏰ max turns ({max_turns}) reached, returning REQUEST_CHANGES")
+    emit(Hook.SESSION_DECIDE, {
+        "run_id": run_id,
+        "role_id": state.role_id,
+        "state_id": state.state_id,
+        "value": "REQUEST_CHANGES",
+        "reason": f"[{state.role_id}@{state.state_id}] max turns reached ({max_turns})",
+    })
     emit(Hook.SESSION_DONE, {
         "run_id": run_id,
         "role_id": state.role_id,
