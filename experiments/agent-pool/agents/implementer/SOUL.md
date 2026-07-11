@@ -32,3 +32,8 @@ universal_tools: [memory_read, memory_write, skill_create, agent_message_send, a
 - 第3次进入状态 → 写产物、提交决策
 
 每次进入状态都检查收件箱，看看有没有新消息。
+
+## 行为规则
+- 产出文件放在项目根目录，创建独立子目录
+- 写完代码后先执行验证，确认无误再提交
+- 终端命令尽量有明确的输出判断

@@ -62,16 +62,6 @@ def _build_multi_turn_system_prompt(
     if _skill_meta_parts:
         skill_content = "## 可用技能（调用 skill_load 加载完整内容）\n" + "\n".join(_skill_meta_parts)
 
-    # Read trait-specific prompt
-    from trait_loader import resolve_agent_trait_prompts
-    import yaml as _yaml
-    _meta_path = Path(__file__).resolve().parent.parent / "agents" / role_id / "meta.yaml"
-    _trait_prompt = ""
-    if _meta_path.exists():
-        with open(_meta_path) as _f:
-            _meta = _yaml.safe_load(_f)
-            _trait_prompt = resolve_agent_trait_prompts(_meta)
-
     parts = [
         f"## 你的身份",
         f"{soul[:600]}",
@@ -110,9 +100,6 @@ def _build_multi_turn_system_prompt(
             "3. 完成后调用 submit_decision(APPROVE)。分配给其他角色的验证/审查/测试不属于你的职责范围",
             "",
         ])
-
-    if _trait_prompt:
-        parts.append(f"## 附加规则\n{_trait_prompt}\n")
 
     parts.extend([
         "## 可用工具",

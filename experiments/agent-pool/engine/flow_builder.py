@@ -47,28 +47,18 @@ def manager_select_agents(goal: str, agents: dict) -> tuple[list[str], list[dict
     ) if team_skills else "\n（无可用的预定义班底，请根据 agent 池自定义组合。）"
 
     # Build agent pool listing
-    from trait_loader import resolve_agent_tools
     agent_list_lines = []
     for aid, info in agents.items():
         if aid == "manager":
             continue
-        try:
-            tools = resolve_agent_tools(info)
-            tools_str = ", ".join(tools) if tools else "(无)"
-        except Exception:
-            tools_str = ", ".join(info.get("tools_allowed", []))
-        traits = info.get("traits", [])
-        traits_str = ", ".join(traits) if traits else "(无)"
-        excluded = info.get("tools_excluded", [])
-        excl_str = f"  排除: {', '.join(excluded)}" if excluded else ""
+        tools = info.get("tools_allowed", [])
+        tools_str = ", ".join(tools) if tools else "(无)"
         desc = info.get("description", "")[:80]
         agent_list_lines.append(
             f"  {aid}:\n"
             f"    名称: {info.get('display_name', aid)}\n"
             f"    角色: {info.get('role', '')}\n"
-            f"    能力组合: [{traits_str}]\n"
             f"    可用工具: [{tools_str}]\n"
-            f"    {excl_str}\n"
             f"    描述: {desc}"
         )
     agent_list = "\n".join(agent_list_lines)

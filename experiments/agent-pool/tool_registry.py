@@ -240,12 +240,8 @@ def _load_agent_meta(agent_id: str) -> dict:
 
 
 def get_agent_tools_schemas(agent_id: str) -> list[dict]:
-    from trait_loader import resolve_agent_tools
     meta = _load_agent_meta(agent_id)
-    if meta.get("traits"):
-        allowed = resolve_agent_tools(meta)
-    else:
-        allowed = meta.get("tools_allowed", [])
+    allowed = meta.get("tools_allowed", [])
     allowed_set = set(allowed)
     all_tools = discover_all_tools()
     schemas = []
