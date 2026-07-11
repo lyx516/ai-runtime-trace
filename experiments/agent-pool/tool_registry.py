@@ -343,15 +343,15 @@ def execute_tool(tool_id: str, args: dict, agent_id: str = "") -> dict:
 
         if sandbox_override:
             sandbox_root = get_sandbox_root()
-            old_workspace = os.environ.get("HERMES_WORKSPACE_ROOT", "")
-            os.environ["HERMES_WORKSPACE_ROOT"] = str(sandbox_root)
+            old_workspace = os.environ.get("RUNTIME_TRACE_WORKSPACE_ROOT", "")
+            os.environ["RUNTIME_TRACE_WORKSPACE_ROOT"] = str(sandbox_root)
             try:
                 result = run_fn(args)
             finally:
                 if old_workspace:
-                    os.environ["HERMES_WORKSPACE_ROOT"] = old_workspace
+                    os.environ["RUNTIME_TRACE_WORKSPACE_ROOT"] = old_workspace
                 else:
-                    os.environ.pop("HERMES_WORKSPACE_ROOT", None)
+                    os.environ.pop("RUNTIME_TRACE_WORKSPACE_ROOT", None)
         else:
             result = run_fn(args)
 

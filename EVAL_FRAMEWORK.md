@@ -40,7 +40,7 @@ Run ece45337af6c (script.sh gate blocked):
 
 ### 2.1 单元层 — 单工具调用正确性
 
-**对标：** `hermes-bench-tool-call` (61 个任务) · BFCL · ToolBench
+**对标：** `runtime-trace-bench-tool-call` (61 个任务) · BFCL · ToolBench
 
 | 指标 | SQL | 现状 |
 |---|---|---|
@@ -162,7 +162,7 @@ LIMIT 10;
 |---|---|---|
 | BFCL (Berkeley) | 低 — 单轮工具调用 | 不涵盖 FSM 或 agent-agent |
 | SWE-bench | 中 — 任务完成 | 不涵盖 per-state 分析 |
-| hermes-bench-tool-call | 高 — 工具调用正确性 | 不涵盖多 agent 流程 |
+| runtime-trace-bench-tool-call | 高 — 工具调用正确性 | 不涵盖多 agent 流程 |
 | IBM/vakra | 中 — 多步多源 | 不涵盖演化 |
 | **本方案** | — | **唯一涵盖 per-state 效率 + 演化有效性** |
 

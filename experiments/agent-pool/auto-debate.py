@@ -10,7 +10,7 @@ call ``mod._run_session_loop``, ``mod._init_agent_session_state``, etc.
 
 # ── Environment defaults must be set before engine submodules import ──
 import os as _os
-_os.environ.setdefault("HERMES_FLOW_PROJECT_ROOT", str(__import__("pathlib").Path(__file__).resolve().parent.parent.parent))
+_os.environ.setdefault("RUNTIME_TRACE_PROJECT_ROOT", str(__import__("pathlib").Path(__file__).resolve().parent.parent.parent))
 
 from engine.config import *  # noqa: F401,F403
 from engine.llm_config import *  # noqa: F401,F403

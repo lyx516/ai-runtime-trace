@@ -9,8 +9,8 @@ from __future__ import annotations
 import json
 from uuid import uuid4 as _uuid4
 
-from hermes_flow.hooks import Hook, subscribe
-from hermes_flow.tools import flow_decide as _flow_decide
+from runtime_trace.hooks import Hook, subscribe
+from runtime_trace.tools import flow_decide as _flow_decide
 
 
 def make_hook_handlers(store, run_id: str):

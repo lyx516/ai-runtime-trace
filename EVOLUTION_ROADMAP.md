@@ -31,7 +31,7 @@
 debate "使用 spec-clarify-team 班底。任务：写一个简单的 Shell 脚本..."
 
 # 手动验证 run_performance 表有真实数据
-sqlite3 experiments/agent-pool/.hermes-flow/runs/<run_id>/state.sqlite \
+sqlite3 experiments/agent-pool/.runtime-trace/runs/<run_id>/state.sqlite \
   "SELECT run_id, tool_stats FROM run_performance"
 # 应看到类似：
 # {"outcome": "completed@DONE", "total_seconds": 424.4,
@@ -76,7 +76,7 @@ FRAMEWORK_WHITELIST = {
 - 每次 patch 不超过 5 行 diff
 - `old_string` 必须精确匹配（防止误改）
 - 同一 run 最多 3 次 patch_framework
-- 改完自动跑 `pytest tests/hermes_flow/ -q`，不通过则自动回滚
+- 改完自动跑 `pytest tests/runtime_trace/ -q`，不通过则自动回滚
 
 #### 2.2 `storage.py` — 新增 `evolution_backups` 表
 

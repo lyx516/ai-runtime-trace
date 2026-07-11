@@ -19,7 +19,7 @@ _ALLOWED_READ_ROOTS: set[Path] = {
 
 # ── Protected directories — writes here trigger auto-backup before mutation ──
 _PROTECTED_DIRS = {
-    _PROJECT_ROOT / "hermes_flow",
+    _PROJECT_ROOT / "runtime_trace",
     _PROJECT_ROOT / "experiments" / "agent-pool" / "engine",
     _PROJECT_ROOT / "experiments" / "agent-pool" / "tools",
 }

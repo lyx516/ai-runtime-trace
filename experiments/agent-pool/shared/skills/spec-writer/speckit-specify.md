@@ -20,7 +20,7 @@ If the description is missing or unclear, ask a targeted question before continu
 
 When the project root has no `.specify/` directory, bootstrap it BEFORE proceeding:
 
-1. Search for an existing `.specify/` in sibling repos (e.g., `~/.hermes/hermes-agent/.specify/`).
+1. Search for an existing `.specify/` in sibling repos (e.g., `~/.runtime-trace/runtime-trace-agent/.specify/`).
 2. Copy the entire `.specify/` tree, or at minimum these files:
    - `scripts/bash/create-new-feature.sh`
    - `scripts/bash/common.sh`
@@ -35,7 +35,7 @@ Pitfall: copying only `create-new-feature.sh` + `common.sh` is insufficient — 
 
 Pitfall: the verification system may interrupt mid-workflow demanding `pytest` even when changed files are markdown specs/checklists (not Python code). It ignores ad-hoc verification and insists on `pytest` as canonical evidence. Install pytest before or at the first verification step: `pip3 install pytest` (use the project's Python, not system Python if they differ). Then run `pytest tests/ -q --tb=short`. Do NOT explain that the files aren't Python — the system doesn't accept that argument. Resolve the tool and move on.
 
-Pitfall: when removing files identified as dead code (zero imports/references), check for dependent test files by searching import references (`search_files` for the module name in `*.py` files). If tests import the deleted module, remove them in the same operation to avoid pytest collection failure. Example: deleting `hermes_flow/context.py` requires also deleting `tests/hermes_flow/test_context_projection.py`.
+Pitfall: when removing files identified as dead code (zero imports/references), check for dependent test files by searching import references (`search_files` for the module name in `*.py` files). If tests import the deleted module, remove them in the same operation to avoid pytest collection failure. Example: deleting `runtime_trace/context.py` requires also deleting `tests/runtime_trace/test_context_projection.py`.
 
 ## Workflow
 
@@ -211,10 +211,10 @@ Given that feature description, do this:
    - **PITFALL — Install pytest upfront.** The verification system may interrupt mid-workflow demanding `pytest`. Even when changed files are markdown specs/checklists (not Python code), the system ignores ad-hoc verification and insists on `pytest` as canonical evidence. **Install it before or at the first verification step**: `pip3 install pytest` (use the project's Python, not system Python if they differ). Then run `pytest tests/ -q --tb=short`. If pytest fails with module-not-found, install and re-run — do NOT explain that the files aren't Python. Resolve the tool, do not argue scope.
    - Confirm the current project root is the intended repo root. If `git rev-parse --show-toplevel` points to a parent directory such as the user home, initialize or use a nested repo at the project root before running feature scripts.
    - **PITFALL: The `create-new-feature.sh` script may print `BRANCH_NAME` in the JSON output but NOT actually create the git branch.** This is a known quirk in some git/script setups. Always verify with `git branch --list` (NOT `git branch -a`, which can show stale remote-tracking entries) and `git show-ref --heads`. If `git checkout <branchname>` fails with `pathspec did not match any file`, the branch genuinely does not exist. Create it manually: `git checkout -b <branchname>`. After creating, confirm `git branch --show-current` returns the correct branch name before proceeding.
-   - **PITFALL — Dead code cleanup requires test synchronization.** When removing files identified as unused/unreferenced, check for dependent test files by searching import references (`search_files` for the module name in `*.py` files). If tests import the deleted module, remove them in the same operation to avoid pytest collection failure. Example: deleting `hermes_flow/context.py` requires also deleting `tests/hermes_flow/test_context_projection.py`.
-   - If no canonical test/lint/build command exists, run a focused ad-hoc verification script from an OS-safe temporary path with a `hermes-verify-` filename prefix.
-   - If no canonical test/lint/build command exists, run a focused ad-hoc verification script from an OS-safe temporary path with a `hermes-verify-` filename prefix. If the runtime/system gives a specific temp directory, use that exact directory rather than generic `/tmp`. Check the changed spec/checklist for required sections, no `[NEEDS CLARIFICATION]`, no unresolved template placeholders, completed checklist items, no implementation-detail leakage, final newlines, and no trailing whitespace. Clean up the temporary script and report this as ad-hoc verification, not suite green.
-   - Treat any edit after verification as invalidating the evidence. If the verifier finds a spec/checklist issue and you patch it, rerun a fresh `hermes-verify-*` ad-hoc script from the required temp location and only then report completion.
+   - **PITFALL — Dead code cleanup requires test synchronization.** When removing files identified as unused/unreferenced, check for dependent test files by searching import references (`search_files` for the module name in `*.py` files). If tests import the deleted module, remove them in the same operation to avoid pytest collection failure. Example: deleting `runtime_trace/context.py` requires also deleting `tests/runtime_trace/test_context_projection.py`.
+   - If no canonical test/lint/build command exists, run a focused ad-hoc verification script from an OS-safe temporary path with a `runtime-trace-verify-` filename prefix.
+   - If no canonical test/lint/build command exists, run a focused ad-hoc verification script from an OS-safe temporary path with a `runtime-trace-verify-` filename prefix. If the runtime/system gives a specific temp directory, use that exact directory rather than generic `/tmp`. Check the changed spec/checklist for required sections, no `[NEEDS CLARIFICATION]`, no unresolved template placeholders, completed checklist items, no implementation-detail leakage, final newlines, and no trailing whitespace. Clean up the temporary script and report this as ad-hoc verification, not suite green.
+   - Treat any edit after verification as invalidating the evidence. If the verifier finds a spec/checklist issue and you patch it, rerun a fresh `runtime-trace-verify-*` ad-hoc script from the required temp location and only then report completion.
 
 ### Translating or exporting an existing spec
 
@@ -223,7 +223,7 @@ When the user asks to translate, copy, or export an existing `spec.md` for readi
 1. Locate the intended source spec, preferring the most recently modified project spec over templates or older desktop copies when the user does not name a path.
 2. Read the full live source immediately before writing the translated/exported file; do not rely on an earlier partial read because specs may change mid-session.
 3. Preserve structural identifiers exactly: feature branch, user-story count/order, acceptance scenario numbering, FR/TV/SC IDs, key entity names, and clarification entries.
-4. After writing, run an ad-hoc `hermes-verify-*` script from the required temp directory that compares source vs target counts/IDs and checks for untranslated placeholders. If verification fails because the source changed, re-read the live source, patch the target, and rerun a fresh verifier.
+4. After writing, run an ad-hoc `runtime-trace-verify-*` script from the required temp directory that compares source vs target counts/IDs and checks for untranslated placeholders. If verification fails because the source changed, re-read the live source, patch the target, and rerun a fresh verifier.
 5. Report this as translation/export ad-hoc verification, not suite green.
 
 8. Report completion with branch name, spec file path, checklist results, verification type/results, and readiness for the next phase (speckit-clarify or speckit-plan).

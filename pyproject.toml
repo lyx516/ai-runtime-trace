@@ -3,7 +3,7 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "hermes-flow-fsm"
+name = "runtime-trace-fsm"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
@@ -11,10 +11,10 @@ dependencies = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["hermes_flow*"]
+include = ["runtime_trace*"]
 
 [project.scripts]
-debate = "hermes_flow.debate_cli:main"
+debate = "runtime_trace.debate_cli:main"
 
 [tool.pytest.ini_options]
-testpaths = ["tests/hermes_flow"]
+testpaths = ["tests/runtime_trace"]

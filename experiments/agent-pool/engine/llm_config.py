@@ -2,8 +2,8 @@
 
 Resolution priority (high → low):
   1. CLI runtime overrides (--model, --api-url, --api-key) — session only
-  2. JSON config file (~/.hermes-flow/llm_config.json) — persistent
-  3. Hermes config (~/.hermes/config.yaml), including named providers
+  2. JSON config file (~/.runtime-trace/llm_config.json) — persistent
+  3. Runtime Trace config (~/.runtime-trace/config.yaml), including named providers
   4. Environment variables (DEEPSEEK_API_KEY / OPENAI_API_KEY) — backward compat
   5. Hardcoded defaults (deepseek-v4-flash @ api.deepseek.com)
 
@@ -29,7 +29,7 @@ _DEFAULT_MODEL = "deepseek-v4-flash"
 _DEFAULT_API_URL = "https://api.deepseek.com/chat/completions"
 _DEFAULT_TEMPERATURE = 0.7
 _DEFAULT_MAX_TOKENS = 8192
-_HERMES_CONFIG_PATH = Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser() / "config.yaml"
+_RUNTIME_TRACE_CONFIG_PATH = Path(os.environ.get("RUNTIME_TRACE_HOME", "~/.runtime-trace")).expanduser() / "config.yaml"
 
 
 @dataclass
@@ -42,6 +42,10 @@ class LLMConfig:
     max_tokens: int = _DEFAULT_MAX_TOKENS
 
 
+class ProviderConfigError(ValueError):
+    """A direct-call provider is incomplete or internally inconsistent."""
+
+
 # ── Load / save ──────────────────────────────────────────────────────────────
 
 def _chat_completions_url(base_url: str) -> str:
@@ -52,10 +56,10 @@ def _chat_completions_url(base_url: str) -> str:
     return f"{base_url}/chat/completions"
 
 
-def _load_hermes_config() -> LLMConfig | None:
-    """Resolve a directly callable OpenAI-compatible Hermes provider.
+def _load_runtime_trace_config() -> LLMConfig | None:
+    """Resolve a directly callable OpenAI-compatible Runtime Trace provider.
 
-    Hermes itself can use OAuth-backed providers, but this standalone runtime
+    Runtime Trace itself can use OAuth-backed providers, but this standalone runtime
     cannot safely reuse those credentials. Prefer the configured active provider
     when it has a base URL and API key; otherwise use the explicitly configured
     ``siliconflow`` provider, then another complete named provider.
@@ -63,7 +67,7 @@ def _load_hermes_config() -> LLMConfig | None:
     try:
         import yaml
 
-        raw = yaml.safe_load(_HERMES_CONFIG_PATH.read_text(encoding="utf-8")) or {}
+        raw = yaml.safe_load(_RUNTIME_TRACE_CONFIG_PATH.read_text(encoding="utf-8")) or {}
     except (ImportError, OSError, ValueError):
         return None
 
@@ -73,26 +77,40 @@ def _load_hermes_config() -> LLMConfig | None:
     providers: dict[str, Any] = dict(providers_raw) if isinstance(providers_raw, dict) else {}
     active_provider = str(model_cfg.get("provider") or "")
 
-    candidates: list[dict[str, Any]] = []
+    candidates: list[tuple[str, dict[str, Any], bool]] = []
     active_entry = providers.get(active_provider)
     if isinstance(active_entry, dict):
-        candidates.append({**active_entry, **{k: v for k, v in model_cfg.items() if v}})
+        candidates.append((
+            active_provider,
+            {**active_entry, **{k: v for k, v in model_cfg.items() if v}},
+            True,
+        ))
     else:
-        candidates.append(model_cfg)
+        candidates.append((active_provider, model_cfg, True))
 
     if active_provider != "siliconflow" and isinstance(providers.get("siliconflow"), dict):
-        candidates.append(providers["siliconflow"])
+        candidates.append(("siliconflow", providers["siliconflow"], False))
     candidates.extend(
-        entry for name, entry in providers.items()
+        (name, entry, False) for name, entry in providers.items()
         if name not in {active_provider, "siliconflow"} and isinstance(entry, dict)
     )
 
-    for entry in candidates:
+    for provider_name, entry, is_active in candidates:
         base_url = str(entry.get("base_url") or "").strip()
         api_key = str(entry.get("api_key") or "").strip()
         if base_url and api_key:
+            provider_model = str(entry.get("model") or "").strip()
+            if not provider_model:
+                if is_active:
+                    provider_model = str(model_cfg.get("default") or _DEFAULT_MODEL)
+                else:
+                    raise ProviderConfigError(
+                        f"Fallback provider '{provider_name}' has no model. "
+                        f"Set providers.{provider_name}.model in "
+                        f"{_RUNTIME_TRACE_CONFIG_PATH}."
+                    )
             return LLMConfig(
-                model=str(entry.get("model") or model_cfg.get("default") or _DEFAULT_MODEL),
+                model=provider_model,
                 api_url=_chat_completions_url(base_url),
                 api_key=api_key,
                 temperature=float(entry.get("temperature") or _DEFAULT_TEMPERATURE),
@@ -101,16 +119,16 @@ def _load_hermes_config() -> LLMConfig | None:
     return None
 
 def load_config() -> LLMConfig:
-    """Load merged config: Hermes → JSON → env vars → CLI overrides.
+    """Load merged config: Runtime Trace → JSON → env vars → CLI overrides.
 
     Priority (high → low):
-      1. CLI runtime override env vars (HERMES_LLM_MODEL / HERMES_LLM_API_URL / HERMES_LLM_API_KEY)
-      2. JSON config file (~/.hermes-flow/llm_config.json)
-      3. Hermes config provider resolution
+      1. CLI runtime override env vars (RUNTIME_TRACE_LLM_MODEL / RUNTIME_TRACE_LLM_API_URL / RUNTIME_TRACE_LLM_API_KEY)
+      2. JSON config file (~/.runtime-trace/llm_config.json)
+      3. Runtime Trace config provider resolution
       4. Legacy env vars (DEEPSEEK_API_KEY / OPENAI_API_KEY)
       5. Hardcoded defaults
     """
-    cfg = _load_hermes_config() or LLMConfig()
+    cfg = _load_runtime_trace_config() or LLMConfig()
 
     # 1. JSON config file (persistent)
     if LLM_CONFIG_PATH.exists():
@@ -130,9 +148,9 @@ def load_config() -> LLMConfig:
         cfg.api_key = env_key
 
     # 3. CLI runtime overrides (highest priority, set by --model/--api-url/--api-key)
-    cli_model = os.environ.get("HERMES_LLM_MODEL", "")
-    cli_url = os.environ.get("HERMES_LLM_API_URL", "")
-    cli_key = os.environ.get("HERMES_LLM_API_KEY", "")
+    cli_model = os.environ.get("RUNTIME_TRACE_LLM_MODEL", "")
+    cli_url = os.environ.get("RUNTIME_TRACE_LLM_API_URL", "")
+    cli_key = os.environ.get("RUNTIME_TRACE_LLM_API_KEY", "")
     if cli_model:
         cfg.model = cli_model
     if cli_url:

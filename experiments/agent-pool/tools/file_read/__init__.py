@@ -2,6 +2,22 @@
 import os
 from pathlib import Path
 
+
+SCHEMA = {
+    "name": "file_read",
+    "description": "Read a text file with line numbers and pagination.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Path relative to the workspace."},
+            "offset": {"type": "integer", "description": "First line number (1-indexed)."},
+            "limit": {"type": "integer", "description": "Maximum number of lines to return."},
+        },
+        "required": ["path"],
+    },
+}
+
+
 def run(args: dict) -> dict:
     path = args.get("path", "")
     offset = args.get("offset", 1)

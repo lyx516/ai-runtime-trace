@@ -10,6 +10,26 @@ import subprocess
 import shlex
 
 
+SCHEMA = {
+    "name": "search_files",
+    "description": "Search file contents by regex or find files by glob within the workspace.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "pattern": {"type": "string", "description": "Regex for content search or glob for file search."},
+            "type": {"type": "string", "enum": ["content", "files"], "description": "Search contents or file names."},
+            "path": {"type": "string", "description": "Directory relative to the workspace."},
+            "file_glob": {"type": "string", "description": "Optional file glob for content search."},
+            "limit": {"type": "integer", "description": "Maximum number of results."},
+            "offset": {"type": "integer", "description": "Number of results to skip."},
+            "output_mode": {"type": "string", "enum": ["content", "files_only", "count"], "description": "Requested result format."},
+            "context": {"type": "integer", "description": "Context lines around content matches."},
+        },
+        "required": ["pattern"],
+    },
+}
+
+
 def run(args: dict) -> dict:
     pattern = args.get("pattern", "")
     search_type = args.get("type", "content")

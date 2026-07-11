@@ -9,9 +9,9 @@ description: Execute the implementation planning workflow using the plan templat
 
 - The feature spec is ready and you need a technical implementation plan.
 
-## Hermes-Specific Notes
+## Runtime Trace-Specific Notes
 
-When running speckit-plan on Hermes (not Claude Code/Codex/Gemini), see `references/hermes-quirks.md` for template resolution workarounds and agent context update limitations.
+When running speckit-plan on Runtime Trace (not Claude Code/Codex/Gemini), see `references/runtime-trace-quirks.md` for template resolution workarounds and agent context update limitations.
 
 ## Inputs
 
@@ -37,7 +37,7 @@ If the spec is missing, ask the user to run speckit-specify first.
    - Re-evaluate Constitution Check post-design
 
 4. **Verify and stop/report**:
-   - If no canonical test/lint/build command exists, run a focused ad-hoc verification script from an OS-safe temporary path with a `hermes-verify-` filename prefix.
+   - If no canonical test/lint/build command exists, run a focused ad-hoc verification script from an OS-safe temporary path with a `runtime-trace-verify-` filename prefix.
    - Verify generated artifacts exist (`plan.md`, `research.md`, `data-model.md`, `contracts/*`, `quickstart.md`), contain no unresolved template placeholders or `NEEDS CLARIFICATION`, preserve final newlines/no trailing whitespace, and are internally consistent with the current branch and feature directory.
    - Clean up the temporary script and report this as ad-hoc verification, not suite green.
    - Command ends after Phase 2 planning. Report branch, IMPL_PLAN path, generated artifacts, and verification result.

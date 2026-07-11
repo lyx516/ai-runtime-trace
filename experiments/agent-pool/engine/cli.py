@@ -96,9 +96,9 @@ LLM 配置:
   debate --model glm-5.2 "设计一个缓存系统"
 
 目录:
-  所有 run 存储在 experiments/agent-pool/.hermes-flow/runs/<run_id>/
+  所有 run 存储在 experiments/agent-pool/.runtime-trace/runs/<run_id>/
   Observer Dashboard: http://localhost:8765（首次 resume/new 时自动启动）
-  LLM 配置: ~/.hermes-flow/llm_config.json""")
+  LLM 配置: ~/.runtime-trace/llm_config.json""")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -114,7 +114,7 @@ def _cmd_show_model():
     print(f"  API Key:     {redact_key(cfg.api_key)}")
     print(f"  Temperature: {cfg.temperature}")
     print(f"  Max Tokens:  {cfg.max_tokens}")
-    print(f"  Config file: ~/.hermes-flow/llm_config.json")
+    print(f"  Config file: ~/.runtime-trace/llm_config.json")
     print()
 
 
@@ -182,11 +182,11 @@ def _handle_task(goal: str, cli_model: str = "", cli_url: str = "", cli_key: str
     """Start a new debate task."""
     # Apply CLI LLM overrides for this run (via env vars; load_config reads them)
     if cli_model:
-        os.environ["HERMES_LLM_MODEL"] = cli_model
+        os.environ["RUNTIME_TRACE_LLM_MODEL"] = cli_model
     if cli_url:
-        os.environ["HERMES_LLM_API_URL"] = cli_url
+        os.environ["RUNTIME_TRACE_LLM_API_URL"] = cli_url
     if cli_key:
-        os.environ["HERMES_LLM_API_KEY"] = cli_key
+        os.environ["RUNTIME_TRACE_LLM_API_KEY"] = cli_key
 
     run_name = goal[:60]
 
@@ -230,11 +230,11 @@ def _handle_task(goal: str, cli_model: str = "", cli_url: str = "", cli_key: str
     # Manager briefs each agent via inbox
     print("\n📨 管理者发送任务简报...")
     sys.path.insert(0, str(_PROJECT_ROOT_DIR))
-    os.environ["HERMES_WORKSPACE_ROOT"] = PROJECT_ROOT
+    os.environ["RUNTIME_TRACE_WORKSPACE_ROOT"] = PROJECT_ROOT
     try:
-        from hermes_flow.tools import flow_send
+        from runtime_trace.tools import flow_send
     except ModuleNotFoundError:
-        print(f"  ⚠️ hermes_flow 加载失败, 检查路径: {_PROJECT_ROOT_DIR}")
+        print(f"  ⚠️ runtime_trace 加载失败, 检查路径: {_PROJECT_ROOT_DIR}")
         flow_send = None
     for aid in agent_ids:
         print(f"  ✅ {aid}: 已收到任务简报")
@@ -252,13 +252,13 @@ def _handle_task(goal: str, cli_model: str = "", cli_url: str = "", cli_key: str
 def _cmd_checkpoints(argv: list[str]):
     """Handle --checkpoints, --diff-checkpoint <id>, --revert-checkpoint <id>."""
     import difflib
-    from hermes_flow.storage import RuntimeStore
+    from runtime_trace.storage import RuntimeStore
 
     cmd = argv[0]
 
     # Collect all run stores
     run_dirs = []
-    for base in (Path(PROJECT_ROOT) / ".hermes-flow" / "runs", _SCRIPT_DIR / ".hermes-flow" / "runs"):
+    for base in (Path(PROJECT_ROOT) / ".runtime-trace" / "runs", _SCRIPT_DIR / ".runtime-trace" / "runs"):
         if base.exists():
             run_dirs.extend(sorted(base.iterdir()))
     run_dirs = [d for d in run_dirs if d.is_dir()]

@@ -1,4 +1,4 @@
-# Hermes Flow Agent Pool — 进展总结
+# Runtime Trace Agent Pool — 进展总结
 
 > 2026-07-06
 
@@ -40,7 +40,7 @@ debate --evolve-all          # 一键进化所有 agent + 清空清单
 ## v3 核心改动
 
 ### Hook Bus 架构
-- **`hermes_flow/hooks.py`**: Hook 总线 — agent loop 唯一副作用出口
+- **`runtime_trace/hooks.py`**: Hook 总线 — agent loop 唯一副作用出口
 - **Checkpoint**: 每轮 agent tool 执行后自动保存, submit_decision 后自动清理
 - **Resume**: `debate --resume <run_id>` 从断点恢复, `--from-state` 回溯到指定 state
 - **Observer**: 自动启动 (端口 8765), 纯 SQLite 只读, 无代码耦合
@@ -84,7 +84,7 @@ debate --feedback [agent_id]           # 查看待改进清单
 
 ```
 ai-runtime-trace/
-├── hermes_flow/            # FSM engine, observer, tools
+├── runtime_trace/            # FSM engine, observer, tools
 │   ├── hooks.py            # ⭐ Hook 总线 (v3)
 │   ├── observer.py         # HTTP Server (8765) — auto-start
 │   ├── storage.py          # SQLite + run_performance + run_agent_feedback
@@ -98,13 +98,13 @@ ai-runtime-trace/
 │   └── traits/             # Trait 定义
 ├── .specify/               # Speckit 脚本 + 模板
 ├── dashboard/              # 前端 (纯 HTML/JS/CSS)
-└── tests/hermes_flow/      # 13 个测试
+└── tests/runtime_trace/      # 13 个测试
 ```
 
 ## 运行时
 
 - **Observer**: 自动启动 `http://localhost:8765`
-- **Runs 目录**: `experiments/agent-pool/.hermes-flow/runs/`
+- **Runs 目录**: `experiments/agent-pool/.runtime-trace/runs/`
 - **Debate**: `debate "task"`
 - **Model**: deepseek-v4-flash, max_tokens=8192 (manager: 4000)
 

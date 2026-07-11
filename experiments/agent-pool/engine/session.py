@@ -14,8 +14,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional
 
-from hermes_flow.hooks import Hook, emit
-from hermes_flow.schemas import AgentSessionState
+from runtime_trace.hooks import Hook, emit
+from runtime_trace.schemas import AgentSessionState
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -182,7 +182,7 @@ def _init_agent_session_state(
 
     # Auto-inject persisted memory for this agent
     try:
-        from hermes_flow.memory import MemoryStore
+        from runtime_trace.memory import MemoryStore
         _mem = MemoryStore().list_keys(role_id)
         if _mem:
             _mem_lines = [f"- {e['key']}: {e['value'][:150]}" for e in _mem[-10:]]
@@ -314,7 +314,7 @@ def _run_agent_session(
 # ═══════════════════════════════════════════════════════════════════════
 
 def _handle_agent_recall(fn_args: dict, store, run_id: str) -> dict:
-    """agent_recall tool — pure SQLite reads, Hermes session_search style.
+    """agent_recall tool — pure SQLite reads, Runtime Trace session_search style.
 
     Five shapes inferred from query type, no mode parameter:
       overview    — run summary
@@ -684,13 +684,13 @@ def _run_session_loop(
                     print(f"     🧠 recall({fn_args.get('query','?')}, agent={fn_args.get('agent','-')}, state={fn_args.get('state','-')})")
                     tool_calls_made += 1
                 elif fn_name == "memory_read":
-                    from hermes_flow.memory import MemoryStore
+                    from runtime_trace.memory import MemoryStore
                     _mval = MemoryStore().read(state.role_id, fn_args.get("key", ""))
                     result = {"ok": True, "value": _mval}
                     print(f"     📖 memory_read({fn_args.get('key','?')}) → {'found' if _mval else 'empty'}")
                     tool_calls_made += 1
                 elif fn_name == "memory_write":
-                    from hermes_flow.memory import MemoryStore
+                    from runtime_trace.memory import MemoryStore
                     MemoryStore().write(state.role_id, fn_args.get("key", ""), fn_args.get("value", ""), run_id)
                     result = {"ok": True}
                     print(f"     💾 memory_write({fn_args.get('key','?')})")

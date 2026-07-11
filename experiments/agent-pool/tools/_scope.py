@@ -1,14 +1,14 @@
 """Workspace scope guard for file tools.
 
-All file operations are scoped to HERMES_WORKSPACE_ROOT.
-On top of that, write operations are further restricted to HERMES_WRITE_SCOPE
-and read operations to HERMES_READ_SCOPE (falling back to HERMES_WRITE_SCOPE
-if HERMES_READ_SCOPE is not set).
+All file operations are scoped to RUNTIME_TRACE_WORKSPACE_ROOT.
+On top of that, write operations are further restricted to RUNTIME_TRACE_WRITE_SCOPE
+and read operations to RUNTIME_TRACE_READ_SCOPE (falling back to RUNTIME_TRACE_WRITE_SCOPE
+if RUNTIME_TRACE_READ_SCOPE is not set).
 
 Env vars:
-  HERMES_WORKSPACE_ROOT  — the outermost boundary (required)
-  HERMES_WRITE_SCOPE     — JSON list of allowed write dirs, relative to workspace
-  HERMES_READ_SCOPE      — JSON list of allowed read dirs, relative to workspace
+  RUNTIME_TRACE_WORKSPACE_ROOT  — the outermost boundary (required)
+  RUNTIME_TRACE_WRITE_SCOPE     — JSON list of allowed write dirs, relative to workspace
+  RUNTIME_TRACE_READ_SCOPE      — JSON list of allowed read dirs, relative to workspace
 
 The caller (run_flow) sets these per-agent before each agent session.
 """
@@ -20,7 +20,7 @@ from pathlib import Path
 
 def get_workspace_root() -> Path:
     """Return the absolute workspace root path."""
-    root = os.environ.get("HERMES_WORKSPACE_ROOT") or os.getcwd()
+    root = os.environ.get("RUNTIME_TRACE_WORKSPACE_ROOT") or os.getcwd()
     return Path(root).resolve()
 
 
@@ -79,7 +79,7 @@ def resolve_write_path(path: str) -> Path:
     """Resolve a path for writing — must be within write_scope."""
     target = _resolve_against_workspace(path)
 
-    write_scope = _parse_scope_list(os.environ.get("HERMES_WRITE_SCOPE", ""))
+    write_scope = _parse_scope_list(os.environ.get("RUNTIME_TRACE_WRITE_SCOPE", ""))
     _check_scope(target, write_scope)
 
     return target
@@ -89,9 +89,9 @@ def resolve_read_path(path: str) -> Path:
     """Resolve a path for reading — must be within read_scope (or write_scope fallback)."""
     target = _resolve_against_workspace(path)
 
-    read_scope = _parse_scope_list(os.environ.get("HERMES_READ_SCOPE", ""))
+    read_scope = _parse_scope_list(os.environ.get("RUNTIME_TRACE_READ_SCOPE", ""))
     if not read_scope:
-        read_scope = _parse_scope_list(os.environ.get("HERMES_WRITE_SCOPE", ""))
+        read_scope = _parse_scope_list(os.environ.get("RUNTIME_TRACE_WRITE_SCOPE", ""))
 
     _check_scope(target, read_scope)
 

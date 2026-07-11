@@ -12,14 +12,14 @@ from engine.config import PROJECT_ROOT, _SCRIPT_DIR
 def _run_dirs() -> list[Path]:
     """Both possible run storage locations."""
     return [
-        Path(PROJECT_ROOT) / ".hermes-flow" / "runs",
-        _SCRIPT_DIR / ".hermes-flow" / "runs",
+        Path(PROJECT_ROOT) / ".runtime-trace" / "runs",
+        _SCRIPT_DIR / ".runtime-trace" / "runs",
     ]
 
 
 def analyze_all_runs():
     """Cross-run pattern recognition. Aggregates performance data and generates suggestions."""
-    from hermes_flow.storage import RuntimeStore
+    from runtime_trace.storage import RuntimeStore
 
     dirs = _run_dirs()
     seen = set()
@@ -128,7 +128,7 @@ Agent 表现: {_agent_summary}
 
 def show_performance(run_id: str):
     """Display run performance evaluation."""
-    from hermes_flow.storage import RuntimeStore
+    from runtime_trace.storage import RuntimeStore
 
     for base in _run_dirs():
         run_dir = base / run_id
@@ -153,7 +153,7 @@ def show_performance(run_id: str):
 
 def list_runs():
     """Scan runs directories and display a summary table."""
-    from hermes_flow.storage import RuntimeStore
+    from runtime_trace.storage import RuntimeStore
 
     dirs = _run_dirs()
     seen = set()
@@ -214,7 +214,7 @@ def list_runs():
 
 def show_feedback(agent_id: str | None = None):
     """Show pending feedback for an agent or all agents."""
-    from hermes_flow.storage import RuntimeStore
+    from runtime_trace.storage import RuntimeStore
 
     all_fb = []
     for base in _run_dirs():

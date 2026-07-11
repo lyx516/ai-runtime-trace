@@ -20,8 +20,8 @@ _FRAMEWORK_WHITELIST = {
     "experiments/agent-pool/agents/manager/skills/spec-team.md",
     "experiments/agent-pool/agents/manager/skills/spec-clarify-team.md",
 }
-from hermes_flow.hooks import reset_bus
-from hermes_flow.schemas import AgentSessionState
+from runtime_trace.hooks import reset_bus
+from runtime_trace.schemas import AgentSessionState
 
 from engine.config import PROJECT_ROOT, _SCRIPT_DIR
 from engine.agent_loader import load_agents
@@ -32,8 +32,8 @@ from engine.llm_config import get_agent_model
 
 def _run_dirs() -> list[Path]:
     return [
-        Path(PROJECT_ROOT) / ".hermes-flow" / "runs",
-        _SCRIPT_DIR / ".hermes-flow" / "runs",
+        Path(PROJECT_ROOT) / ".runtime-trace" / "runs",
+        _SCRIPT_DIR / ".runtime-trace" / "runs",
     ]
 
 
@@ -92,7 +92,7 @@ def evolve():
     For each run, starts an EvolutionAgent session with agent_recall tool
     to investigate, produce per-agent feedback, and generate evolution actions.
     """
-    from hermes_flow.storage import RuntimeStore
+    from runtime_trace.storage import RuntimeStore
 
     dirs = _run_dirs()
 
@@ -189,7 +189,7 @@ JSON 格式：
 
         print(f"  🤖 EvolutionAgent investigating...")
         reset_bus()
-        from hermes_flow.bootstrap import bootstrap_runtime
+        from runtime_trace.bootstrap import bootstrap_runtime
         bootstrap_runtime(store, run_id, enable_observer=False)
         session_result = _run_session_loop(state, store, run_id, agents,
                                   clarify_fn=lambda q, c: "")
@@ -267,7 +267,7 @@ JSON 格式：
                     # Pytest gate
                     result = subprocess.run(
                         [str(PROJECT_ROOT_PATH / ".venv" / "bin" / "python"), "-m", "pytest",
-                         str(PROJECT_ROOT_PATH / "tests" / "hermes_flow"), "-q"],
+                         str(PROJECT_ROOT_PATH / "tests" / "runtime_trace"), "-q"],
                         capture_output=True, timeout=30, cwd=str(PROJECT_ROOT_PATH),
                     )
                     if result.returncode != 0:
@@ -290,7 +290,7 @@ JSON 格式：
         # explicitly run the same deterministic evaluator after their review.
         try:
             if store.load_run_performance(run_id) is None:
-                from hermes_flow.evaluator import quick_evaluate
+                from runtime_trace.evaluator import quick_evaluate
                 quick_evaluate(store, run_id)
         except Exception:
             pass
@@ -309,7 +309,7 @@ def evolve_all():
 
 def evolve_agent(agent_id: str, apply: bool = False):
     """Process pending feedback for a single agent with EvolutionAgent LLM."""
-    from hermes_flow.storage import RuntimeStore
+    from runtime_trace.storage import RuntimeStore
 
     dirs = _run_dirs()
     all_fb = []

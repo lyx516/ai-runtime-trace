@@ -126,7 +126,7 @@
   function renderTools(packet) {
     const flowTools = asArray(packet.available_tools);
     const html = renderList('flow tools', flowTools) +
-      '<div style="color:var(--text-tertiary);font-size:8px;margin-top:5px">Flow tools are the tools exposed by this runtime packet. Hermes tool schemas are shown here only if captured upstream.</div>';
+      '<div style="color:var(--text-tertiary);font-size:8px;margin-top:5px">Flow tools are the tools exposed by this runtime packet. Runtime Trace tool schemas are shown here only if captured upstream.</div>';
     return card('Tools Available to LLM', flowTools.length + ' flow tools', html, 'rgba(45,212,191,0.22)');
   }
 

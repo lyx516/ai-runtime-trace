@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4 as _uuid4
 
-from hermes_flow.hooks import reset_bus
+from runtime_trace.hooks import reset_bus
 
 from engine.config import PROJECT_ROOT
 from engine.agent_loader import load_agents
@@ -20,9 +20,9 @@ from engine.session import _run_agent_session
 
 def _run_fsm_loop(store, run_id: str, goal: str, agent_ids: list[str], agents: dict):
     """FSM while loop — shared by run_flow() and resume_flow()."""
-    from hermes_flow.tools import flow_step
-    from hermes_flow.schemas import RunStatus
-    from hermes_flow.engine import advance_state as eng_advance
+    from runtime_trace.tools import flow_step
+    from runtime_trace.schemas import RunStatus
+    from runtime_trace.engine import advance_state as eng_advance
 
     _agent_specs = store.load_agent_specs(run_id)
     conn = store.connect()
@@ -126,8 +126,8 @@ def _run_fsm_loop(store, run_id: str, goal: str, agent_ids: list[str], agents: d
             _spec = _agent_specs.get(role_id, {})
             _write_scope = _spec.get("write_scope", [])
             _read_scope = _spec.get("read_scope", [])
-            os.environ["HERMES_WRITE_SCOPE"] = json.dumps(_write_scope)
-            os.environ["HERMES_READ_SCOPE"] = json.dumps(_read_scope)
+            os.environ["RUNTIME_TRACE_WRITE_SCOPE"] = json.dumps(_write_scope)
+            os.environ["RUNTIME_TRACE_READ_SCOPE"] = json.dumps(_read_scope)
             for _d in _write_scope:
                 Path(PROJECT_ROOT, _d).mkdir(parents=True, exist_ok=True)
 
@@ -195,7 +195,7 @@ def _run_fsm_loop(store, run_id: str, goal: str, agent_ids: list[str], agents: d
             # Auto-capture to persistent memory (fixed key per state, overwrites — no bloat)
             if tool_count > 0:
                 try:
-                    from hermes_flow.memory import MemoryStore
+                    from runtime_trace.memory import MemoryStore
                     MemoryStore().write(role_id, f"learn:{state_id}", f"{val}: {reason[:200]}", run_id)
                 except Exception:
                     pass
@@ -246,7 +246,7 @@ def _run_fsm_loop(store, run_id: str, goal: str, agent_ids: list[str], agents: d
                     for r in required_roles
                 )
                 if _all_approved:
-                    from hermes_flow.schemas import RunStatus
+                    from runtime_trace.schemas import RunStatus
                     store.update_status(run_id, RunStatus.COMPLETED)
                     print(f"  🏁 Self-loop complete: all roles decided → completed")
                     break
@@ -278,13 +278,13 @@ def _run_fsm_loop(store, run_id: str, goal: str, agent_ids: list[str], agents: d
 
 def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, agents: dict, output_dir: str = ""):
     """Flow engine: create run, wire hooks, start observer, enter FSM loop."""
-    os.environ["HERMES_FLOW_PROJECT_ROOT"] = PROJECT_ROOT
-    os.environ["HERMES_WORKSPACE_ROOT"] = PROJECT_ROOT
+    os.environ["RUNTIME_TRACE_PROJECT_ROOT"] = PROJECT_ROOT
+    os.environ["RUNTIME_TRACE_WORKSPACE_ROOT"] = PROJECT_ROOT
 
-    from hermes_flow.tools import flow_init
-    from hermes_flow.run_paths import get_run_dir
-    from hermes_flow.storage import RuntimeStore
-    from hermes_flow.trace import SqliteTracer, set_tracer
+    from runtime_trace.tools import flow_init
+    from runtime_trace.run_paths import get_run_dir
+    from runtime_trace.storage import RuntimeStore
+    from runtime_trace.trace import SqliteTracer, set_tracer
 
     result = flow_init(PROJECT_ROOT, str(yaml_path), run_name)
     if not result.get("ok"):
@@ -297,7 +297,7 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
     store.init_schema()
 
     reset_bus()
-    from hermes_flow.bootstrap import bootstrap_runtime
+    from runtime_trace.bootstrap import bootstrap_runtime
     bootstrap_runtime(store, run_id, project_root=PROJECT_ROOT)
 
     set_tracer(SqliteTracer(store, run_id=run_id))
@@ -314,17 +314,17 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
 
 def resume_flow(run_id: str, extra_context: str = "", from_state: str = "", dry_run: bool = False):
     """Resume an existing run from its last checkpoint. dry_run=True: show info only."""
-    os.environ["HERMES_FLOW_PROJECT_ROOT"] = PROJECT_ROOT
-    os.environ["HERMES_WORKSPACE_ROOT"] = PROJECT_ROOT
+    os.environ["RUNTIME_TRACE_PROJECT_ROOT"] = PROJECT_ROOT
+    os.environ["RUNTIME_TRACE_WORKSPACE_ROOT"] = PROJECT_ROOT
 
-    from hermes_flow.run_paths import get_run_dir
-    from hermes_flow.storage import RuntimeStore
-    from hermes_flow.trace import SqliteTracer, set_tracer
+    from runtime_trace.run_paths import get_run_dir
+    from runtime_trace.storage import RuntimeStore
+    from runtime_trace.trace import SqliteTracer, set_tracer
 
     # Try primary runs dir first, fallback to git root
     run_dir = get_run_dir(run_id, PROJECT_ROOT)
     if not run_dir.exists():
-        _fallback = Path(PROJECT_ROOT) / ".hermes-flow" / "runs" / run_id
+        _fallback = Path(PROJECT_ROOT) / ".runtime-trace" / "runs" / run_id
         if _fallback.exists():
             run_dir = _fallback
     if not run_dir.exists():
@@ -335,7 +335,7 @@ def resume_flow(run_id: str, extra_context: str = "", from_state: str = "", dry_
     store.init_schema()
 
     reset_bus()
-    from hermes_flow.bootstrap import bootstrap_runtime
+    from runtime_trace.bootstrap import bootstrap_runtime
     bootstrap_runtime(store, run_id, project_root=PROJECT_ROOT)
 
     set_tracer(SqliteTracer(store, run_id=run_id))

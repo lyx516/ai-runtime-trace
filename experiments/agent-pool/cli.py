@@ -6,7 +6,7 @@ Usage:
     debate "实现一个向量数据库，索引性能为先"
 
 The command uses the repository root as the default project root.
-Set HERMES_FLOW_PROJECT_ROOT to override.
+Set RUNTIME_TRACE_PROJECT_ROOT to override.
 """
 
 import os
@@ -17,18 +17,18 @@ from pathlib import Path
 def main():
     # Locate the package root (where agents/, tools/, shared/ live)
     pkg_dir = Path(__file__).resolve().parent
-    project_root = os.environ.get("HERMES_FLOW_PROJECT_ROOT") or str(pkg_dir.parent.parent)
-    runs_dir = os.environ.get("HERMES_FLOW_RUNS_DIR") or str(pkg_dir / ".hermes-flow" / "runs")
+    project_root = os.environ.get("RUNTIME_TRACE_PROJECT_ROOT") or str(pkg_dir.parent.parent)
+    runs_dir = os.environ.get("RUNTIME_TRACE_RUNS_DIR") or str(pkg_dir / ".runtime-trace" / "runs")
 
-    # Ensure hermes_flow is importable (in case not pip-installed)
-    hermes_flow_dir = pkg_dir.parent.parent
-    if hermes_flow_dir not in sys.path:
-        sys.path.insert(0, str(hermes_flow_dir))
+    # Ensure runtime_trace is importable (in case not pip-installed)
+    runtime_trace_dir = pkg_dir.parent.parent
+    if runtime_trace_dir not in sys.path:
+        sys.path.insert(0, str(runtime_trace_dir))
 
     # Set env vars for child processes and tools
-    os.environ["HERMES_FLOW_PROJECT_ROOT"] = project_root
-    os.environ["HERMES_FLOW_RUNS_DIR"] = runs_dir
-    os.environ["HERMES_WORKSPACE_ROOT"] = project_root
+    os.environ["RUNTIME_TRACE_PROJECT_ROOT"] = project_root
+    os.environ["RUNTIME_TRACE_RUNS_DIR"] = runs_dir
+    os.environ["RUNTIME_TRACE_WORKSPACE_ROOT"] = project_root
 
     # Delegate to auto-debate (load by file path since the filename has a hyphen)
     import importlib.util

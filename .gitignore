@@ -9,7 +9,7 @@ build/
 venv/
 
 # Runtime
-.hermes-flow/
+.runtime-trace/
 .matplotlib/
 experiments/*/fsm_run_id.txt
 

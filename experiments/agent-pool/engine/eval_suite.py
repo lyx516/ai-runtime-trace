@@ -16,7 +16,7 @@ from collections import defaultdict
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-RUNS_ROOT = PROJECT_ROOT / "experiments" / "agent-pool" / ".hermes-flow" / "runs"
+RUNS_ROOT = PROJECT_ROOT / "experiments" / "agent-pool" / ".runtime-trace" / "runs"
 BENCHMARKS_PATH = PROJECT_ROOT / "experiments" / "agent-pool" / "benchmarks" / "tasks.yaml"
 
 

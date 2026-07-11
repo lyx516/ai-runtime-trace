@@ -42,7 +42,7 @@ _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH", "CREDENTIAL"
 # Safe prefixes kept in child env
 _SAFE_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM", "SHELL", "LOGNAME",
                   "TMPDIR", "TMP", "TEMP", "XDG_", "PYTHONPATH", "VIRTUAL_ENV",
-                  "HERMES_WORKSPACE", "HERMES_WRITE", "HERMES_READ", "HERMES_FLOW")
+                  "RUNTIME_TRACE_WORKSPACE", "RUNTIME_TRACE_WRITE", "RUNTIME_TRACE_READ", "RUNTIME_TRACE")
 
 
 def _scrub_env(raw: dict) -> dict:

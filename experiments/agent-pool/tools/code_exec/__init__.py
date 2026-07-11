@@ -34,7 +34,7 @@ import tempfile
 _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH", "CREDENTIAL", "DSN")
 _SAFE_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM", "SHELL", "LOGNAME",
                   "TMPDIR", "TMP", "TEMP", "XDG_", "PYTHONPATH", "VIRTUAL_ENV",
-                  "HERMES_WORKSPACE", "HERMES_WRITE", "HERMES_READ", "HERMES_FLOW")
+                  "RUNTIME_TRACE_WORKSPACE", "RUNTIME_TRACE_WRITE", "RUNTIME_TRACE_READ", "RUNTIME_TRACE")
 
 
 def _scrub_env(raw: dict) -> dict:
@@ -74,9 +74,9 @@ def run(args: dict) -> dict:
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PATH"] = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
     # Inject scope env vars so scope-aware code inside code_exec respects boundaries
-    env["HERMES_WORKSPACE_ROOT"] = ws_root
-    env["HERMES_WRITE_SCOPE"] = os.environ.get("HERMES_WRITE_SCOPE", "")
-    env["HERMES_READ_SCOPE"] = os.environ.get("HERMES_READ_SCOPE", "")
+    env["RUNTIME_TRACE_WORKSPACE_ROOT"] = ws_root
+    env["RUNTIME_TRACE_WRITE_SCOPE"] = os.environ.get("RUNTIME_TRACE_WRITE_SCOPE", "")
+    env["RUNTIME_TRACE_READ_SCOPE"] = os.environ.get("RUNTIME_TRACE_READ_SCOPE", "")
 
     tmp = ""
     try:
