@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from hermes_flow.errors import RuntimeStateError
+from hermes_flow.hooks import Hook, emit
 from hermes_flow.schemas import (
     DecisionValue,
     RunStatus,
@@ -348,6 +349,10 @@ def advance_state(
         # Record the transition
         store.record_transition(run_id, from_state_id, to_state_id, gate_result, round_counter)
 
+        # Emit lifecycle events (STATE_EXIT → STATE_ENTER)
+        emit(Hook.STATE_EXIT, {"run_id": run_id, "state_id": from_state_id, "next_state": to_state_id})
+        emit(Hook.STATE_ENTER, {"run_id": run_id, "state_id": to_state_id, "round": round_counter})
+
         # Update current_state_id via record_transition already does this, but
         # we also need to ensure the round counter is reset for the new state
         run = store.load_status(run_id)
@@ -366,6 +371,14 @@ def advance_state(
                 actor="system",
                 payload={"gate_result": gate_result, "previous_state": from_state_id},
             )
+            # Emit RUN_COMPLETED after status is persisted so quick_evaluate
+            # reads the correct "completed" status from SQLite.
+            emit(Hook.RUN_COMPLETED, {
+                "run_id": run_id,
+                "final_state": to_state_id,
+                "status": RunStatus.COMPLETED.value,
+                "completed_at": _now(),
+            })
         else:
             store.append_audit_event(
                 run_id=run_id,

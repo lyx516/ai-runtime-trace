@@ -15,7 +15,6 @@ from hermes_flow.hooks import reset_bus
 from engine.config import PROJECT_ROOT
 from engine.agent_loader import load_agents
 from engine.artifacts import find_output_artifact
-from engine.hooks_wiring import make_hook_handlers
 from engine.session import _run_agent_session
 
 
@@ -298,10 +297,8 @@ def run_flow(goal: str, agent_ids: list[str], yaml_path: Path, run_name: str, ag
     store.init_schema()
 
     reset_bus()
-    make_hook_handlers(store, run_id)
-
-    from hermes_flow.observer import ensure_observer
-    ensure_observer(port=8765, project_root=PROJECT_ROOT)
+    from hermes_flow.bootstrap import bootstrap_runtime
+    bootstrap_runtime(store, run_id, project_root=PROJECT_ROOT)
 
     set_tracer(SqliteTracer(store, run_id=run_id))
 
@@ -338,10 +335,8 @@ def resume_flow(run_id: str, extra_context: str = "", from_state: str = "", dry_
     store.init_schema()
 
     reset_bus()
-    make_hook_handlers(store, run_id)
-
-    from hermes_flow.observer import ensure_observer
-    ensure_observer(port=8765, project_root=PROJECT_ROOT)
+    from hermes_flow.bootstrap import bootstrap_runtime
+    bootstrap_runtime(store, run_id, project_root=PROJECT_ROOT)
 
     set_tracer(SqliteTracer(store, run_id=run_id))
 
@@ -359,23 +354,20 @@ def resume_flow(run_id: str, extra_context: str = "", from_state: str = "", dry_
     # Inject extra context into goal + agent inboxes (before FSM loop)
     if extra_context:
         goal = f"{goal}\n\n## 补充说明\n{extra_context}"
-        conn = store.connect()
-        now = datetime.now(timezone.utc).isoformat()
         for rid in agent_ids:
-            msg_id = _uuid4().hex[:12]
-            conn.execute(
-                "INSERT INTO messages(message_id,run_id,state_id,from_role,intended_recipients,"
-                "authorized_recipients,recipient_availability,visibility,kind,content,"
-                "delivery_outcome,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                (msg_id, run_id, "", "user", json.dumps([rid]),
-                 json.dumps([rid]), json.dumps({rid: True}),
-                 "targeted", "question", extra_context, "delivered", now),
+            store.save_message(
+                message_id=_uuid4().hex[:12],
+                run_id=run_id,
+                state_id="",
+                from_role="user",
+                intended_recipients=[rid],
+                authorized_recipients=[rid],
+                recipient_availability={rid: True},
+                visibility="targeted",
+                kind="question",
+                content=extra_context,
+                delivery_outcome="delivered",
             )
-            conn.execute(
-                "INSERT INTO inboxes(run_id,role_id,state_id,message_id,generated_at) VALUES(?,?,?,?,?)",
-                (run_id, rid, "", msg_id, now),
-            )
-        conn.commit()
         print(f"📝 Extra context injected: {extra_context[:60]}...")
 
     agents = load_agents()

@@ -25,9 +25,7 @@ from hermes_flow.schemas import AgentSessionState
 
 from engine.config import PROJECT_ROOT, _SCRIPT_DIR
 from engine.agent_loader import load_agents
-from engine.hooks_wiring import make_hook_handlers
 from engine.session import _run_session_loop
-from engine.evaluate import persist_performance
 from engine.llm_client import call_llm
 from engine.llm_config import get_agent_model
 
@@ -191,7 +189,8 @@ JSON 格式：
 
         print(f"  🤖 EvolutionAgent investigating...")
         reset_bus()
-        make_hook_handlers(store, run_id)
+        from hermes_flow.bootstrap import bootstrap_runtime
+        bootstrap_runtime(store, run_id, enable_observer=False)
         session_result = _run_session_loop(state, store, run_id, agents,
                                   clarify_fn=lambda q, c: "")
         print(f"  ✅ Evaluation complete: {session_result.get('value', '?')}")
@@ -287,15 +286,12 @@ JSON 格式：
         else:
             print(f"  ⚠️  No evaluation JSON found in EvolutionAgent response")
 
-        # Persist performance (rule-based, enriched by EvolutionAgent eval)
+        # EvolutionAgent sessions do not reach a terminal FSM state, so they
+        # explicitly run the same deterministic evaluator after their review.
         try:
             if store.load_run_performance(run_id) is None:
-                _agent_rows = conn.execute(
-                    "SELECT DISTINCT role_id FROM decisions WHERE run_id=?", (run_id,),
-                ).fetchall()
-                persist_performance(store, run_id, goal,
-                    [r["role_id"] for r in _agent_rows],
-                    eval_result)
+                from hermes_flow.evaluator import quick_evaluate
+                quick_evaluate(store, run_id)
         except Exception:
             pass
 

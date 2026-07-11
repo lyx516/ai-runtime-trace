@@ -13,6 +13,7 @@ from hermes_flow.schemas import (
     AgentBinding,
     Artifact,
     Decision,
+    DeliveryOutcome,
     FlowInitResult,
     FlowRun,
     FlowStatus,
@@ -620,6 +621,47 @@ class RuntimeStore:
             )
             conn.commit()
             span.outputs = {"delivery_outcome": envelope.delivery_outcome.value}
+
+    # ── Save message + inbox entries (convenience) ────────────────────────
+
+    def save_message(
+        self,
+        message_id: str,
+        run_id: str,
+        state_id: str,
+        from_role: str,
+        intended_recipients: list[str],
+        authorized_recipients: list[str] | None = None,
+        recipient_availability: dict[str, bool] | None = None,
+        visibility: str = "targeted",
+        kind: str = "question",
+        content: str = "",
+        delivery_outcome: str = "delivered",
+        rejection_reason: str = "",
+    ) -> None:
+        """Save a message and its inbox entries in one call.
+
+        High-level API replacing the inline INSERT INTO messages/inboxes
+        that was scattered in agent_message_send and resume_flow.
+        """
+        envelope = MessageEnvelope(
+            message_id=message_id,
+            run_id=run_id,
+            state_id=state_id,
+            from_role=from_role,
+            intended_recipients=intended_recipients,
+            authorized_recipients=authorized_recipients or intended_recipients,
+            recipient_availability=recipient_availability or {r: True for r in intended_recipients},
+            visibility=visibility,
+            kind=kind,
+            content=content,
+            delivery_outcome=DeliveryOutcome(delivery_outcome),
+            rejection_reason=rejection_reason,
+            created_at=_now(),
+        )
+        self.record_message_attempt(envelope)
+        for r in intended_recipients:
+            self.add_inbox_entries(run_id, r, state_id, [message_id])
 
     # ── Add inbox entries ─────────────────────────────────────────────────
 

@@ -442,6 +442,17 @@ class SSEHandler(http.server.BaseHTTPRequestHandler):
             while True:
                 try:
                     msg = q.get(timeout=30)
+                    # Filter by run_id: SSE clients only see events for their run
+                    if run_id:
+                        try:
+                            parsed = json.loads(msg)
+                            evt_rid = parsed.get("run_id", "")
+                            if not evt_rid and isinstance(parsed.get("data"), dict):
+                                evt_rid = parsed["data"].get("run_id", "")
+                            if evt_rid and evt_rid != run_id:
+                                continue
+                        except (json.JSONDecodeError, TypeError):
+                            pass
                     self.wfile.write(f"data: {msg}\n\n".encode())
                     self.wfile.flush()
                 except queue.Empty:
