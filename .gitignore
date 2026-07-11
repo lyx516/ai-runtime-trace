@@ -9,8 +9,8 @@ build/
 venv/
 
 # Runtime
-.hermes-flow/runs/
-**/.hermes-flow/runs/
+.hermes-flow/
+.matplotlib/
 experiments/*/fsm_run_id.txt
 
 # Auto-generated artifacts
