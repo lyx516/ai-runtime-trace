@@ -37,3 +37,9 @@ Thumbs.db
 
 # Sandbox workspace
 experiments/agent-pool/.self/
+
+# System libraries (accidentally tracked)
+Library/
+
+# Auto-generated run output
+output/
