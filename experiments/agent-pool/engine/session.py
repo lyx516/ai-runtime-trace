@@ -264,17 +264,27 @@ def _run_agent_session(
     write_scope: list[str] = None,
     flow_overview: str = "",
     clarify_fn=None,
+    decision_cutoff: str | None = None,
 ) -> dict:
     """Multi-turn agent session — auto-resumes from checkpoint if available.
 
-    1. 幂等性检查: 如果已有 decision → 跳过
+    1. 幂等性检查: 如果已有 decision → 跳过（仅认 decision_cutoff 之后的decision）
     2. 尝试从 checkpoint 恢复 → 直接进 loop
     3. 否则 fresh init → loop
 
     Agent loop 只 emit hook，不直接调 store 持久化方法。
     """
-    # ── 幂等性: 已提交 decision 则不再执行 ─────────────────
-    if store is not None and run_id and store.agent_has_decision(run_id, state_id, role_id):
+    # ── 幂等性: 已提交 decision 则返回真实值（不硬编码 APPROVE） ────────
+    if store is not None and run_id and store.agent_has_decision(run_id, state_id, role_id, cutoff=decision_cutoff):
+        conn = store.connect()
+        row = conn.execute(
+            "SELECT value, reason FROM decisions WHERE run_id=? AND state_id=? AND role_id=? ORDER BY created_at DESC LIMIT 1",
+            (run_id, state_id, role_id),
+        ).fetchone()
+        if row:
+            real_val = dict(row).get("value", "APPROVE")
+            real_reason = dict(row).get("reason", "")
+            return {"value": real_val, "reason": f"[skip] {real_reason}", "tool_calls": 0}
         return {"value": "APPROVE", "reason": "[skip] decision already exists", "tool_calls": 0}
 
     # ── Try resume from checkpoint ─────────────────────────

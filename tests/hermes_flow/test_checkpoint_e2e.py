@@ -246,7 +246,7 @@ class TestCheckpointE2E:
         )
 
         assert result["value"] == "APPROVE"
-        assert result["reason"] == "[skip] decision already exists"
+        assert result["reason"].startswith("[skip]")
         assert result["tool_calls"] == 0
 
     def test_checkpoint_state_messages_roundtrip(self):

@@ -166,6 +166,15 @@ def _run_fsm_loop(store, run_id: str, goal: str, agent_ids: list[str], agents: d
                     print(f"  请输入 1-{len(choices)} 或 t")
                 return answer
 
+            # Compute decision_cutoff: only decisions made AFTER this state's
+            # most recent entry matter.  Old decisions from prior visits are
+            # ignored, so agents re-execute on retry instead of being skipped.
+            _last_trans = conn.execute(
+                "SELECT created_at FROM transitions WHERE run_id=? AND to_state_id=? ORDER BY created_at DESC LIMIT 1",
+                (run_id, state_id),
+            ).fetchone()
+            _decision_cutoff = _last_trans["created_at"] if _last_trans else None
+
             result = _run_agent_session(
                 role_id, soul, goal, state_id, cur_round,
                 all_msgs, inbox_rows, gate, tool_schemas, agents,
@@ -176,6 +185,7 @@ def _run_fsm_loop(store, run_id: str, goal: str, agent_ids: list[str], agents: d
                 write_scope=_write_scope,
                 flow_overview=_build_flow_overview(state_id),
                 clarify_fn=_clarify_handler,
+                decision_cutoff=_decision_cutoff,
             )
 
             val = result.get("value", "APPROVE").upper()
@@ -191,11 +201,13 @@ def _run_fsm_loop(store, run_id: str, goal: str, agent_ids: list[str], agents: d
                 except Exception:
                     pass
 
-            # If agent returned a decision but didn't call submit_decision (0 tool calls),
-            # always record it so evaluate_gate sees the latest decision
-            if tool_count == 0 and val in ("APPROVE", "REQUEST_CHANGES", "BLOCKED"):
-                from hermes_flow.tools import flow_decide
-                flow_decide(run_id, state_id, role_id, val, reason)
+            # Record the decision so evaluate_gate sees it.
+            # When submit_decision is called as a tool, hooks_wiring also persists it
+            # via SESSION_DECIDE; this fallback covers the path where hooks aren't wired
+            # (tests, resume, single-shot).  Double-recording is harmless because
+            # evaluate_gate reads the latest decision per role via ORDER BY created_at DESC.
+            from hermes_flow.tools import flow_decide
+            flow_decide(run_id, state_id, role_id, val, reason)
 
             # Product gate: if artifact is invalid, override the agent's decision.
             output_artifacts = state_dict.get("output_artifacts", [])
@@ -220,19 +232,21 @@ def _run_fsm_loop(store, run_id: str, goal: str, agent_ids: list[str], agents: d
         # ── All roles have run in this round — now evaluate gate ──
         r3 = flow_step(run_id)
         if r3.get("ok"):
-            print(f"  → {r3.get('from_state')} → {r3.get('to_state')}")
-            # Self-loop termination: all roles must have passed, not just decided
-            if r3.get("from_state") and r3.get("from_state") == r3.get("to_state"):
+            from_sid = r3.get("from_state", "")
+            to_sid = r3.get("to_state", "")
+            print(f"  → {from_sid} → {to_sid}")
+            # Self-loop: flow_step returned same state -> review all decisions
+            if from_sid and from_sid == to_sid:
                 _pass_vals = gate.get("pass_values", ["APPROVE"])
                 _rows = {}
                 for _r in required_roles:
                     _row = store.connect().execute(
                         "SELECT value FROM decisions WHERE run_id=? AND state_id=? AND role_id=? ORDER BY created_at DESC LIMIT 1",
-                        (run_id, r3["from_state"], _r),
+                        (run_id, from_sid, _r),
                     ).fetchone()
                     _rows[_r] = dict(_row).get("value", "") if _row else ""
                 _all_approved = all(
-                    store.agent_has_decision(run_id, r3["from_state"], r)
+                    store.agent_has_decision(run_id, from_sid, r)
                     and _rows.get(r, "") in _pass_vals
                     for r in required_roles
                 )

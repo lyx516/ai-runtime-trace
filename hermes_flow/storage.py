@@ -815,13 +815,16 @@ class RuntimeStore:
         )
         conn.commit()
 
-    def agent_has_decision(self, run_id: str, state_id: str, role_id: str) -> bool:
-        """Check if a role has already submitted a decision for this state. 幂等性保证。"""
+    def agent_has_decision(self, run_id: str, state_id: str, role_id: str,
+                           cutoff: str | None = None) -> bool:
+        """Check if a role has submitted a decision for this state since cutoff."""
         conn = self.connect()
-        row = conn.execute(
-            "SELECT 1 FROM decisions WHERE run_id=? AND state_id=? AND role_id=?",
-            (run_id, state_id, role_id),
-        ).fetchone()
+        sql = "SELECT 1 FROM decisions WHERE run_id=? AND state_id=? AND role_id=?"
+        params: list = [run_id, state_id, role_id]
+        if cutoff:
+            sql += " AND created_at >= ?"
+            params.append(cutoff)
+        row = conn.execute(sql, params).fetchone()
         return row is not None
 
     # ── Run performance ─────────────────────────────────────────────────
